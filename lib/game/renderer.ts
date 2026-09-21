@@ -7,7 +7,7 @@ import {
   FAR_Z, NEAR_Z, PLAYER_Z, PLAYER_SCREEN_Y, PLAYER_WORLD_HEIGHT,
   LANE_WORLD_X, TRACK_HALF_W,
   WALL_HEIGHT, LOW_WALL_HEIGHT, HIGH_BAR_BOTTOM, HIGH_BAR_THICKNESS,
-  JUMP_HEIGHT, INVINCIBLE_FRAMES, C,
+  JUMP_HEIGHT, C,
 } from '../constants';
 import { project, screenYToRelZ, lerp } from '../utils';
 import type { GameState, Obstacle, CoinItem } from '../../types/game';
@@ -383,9 +383,6 @@ function drawCoins(ctx: CanvasRenderingContext2D, state: GameState): void {
 
 function drawPlayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   const p = state.player;
-
-  // Blink when invincible
-  if (p.isInvincible && Math.floor(state.frameCount / 4) % 2 === 0) return;
 
   // Calculate screen-X: interpolate between lane positions
   const fromX = laneScreenX(p.lane);

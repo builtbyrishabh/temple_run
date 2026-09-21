@@ -7,13 +7,26 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import { useGameLoop }   from '@/hooks/useGameLoop';
 import { useInput }      from '@/hooks/useInput';
 import { initGameState, updateGame } from '@/lib/game/engine';
-import { render }        from '@/lib/game/renderer';
+import { createRenderer3D, type Renderer3D } from '@/lib/game/renderer3d';
 import { initAudio, startMusic, stopMusic, playSfx, setMusicVolume, setSfxVolume } from '@/lib/game/audio';
-import type { GameState, Difficulty } from '@/types/game';
+import type { GameState, Difficulty, GameDriver, InputState } from '@/types/game';
+
+const NO_INPUT: InputState = { left: false, right: false, up: false, down: false, pause: false };
+
+// The engine is a fixed-step simulation — every duration in lib/constants.ts is
+// counted in frames at 60fps, and the balance is tuned against that — so the
+// step size must not follow the display. One step per animation frame ran the
+// whole game at double speed on a 120Hz screen and stuttered whenever a frame
+// was dropped; the loop below advances real time instead and hands the renderer
+// the leftover fraction so the corridor still slides smoothly between steps.
+const STEP_MS = 1000 / 60;
+
+/** Most simulation one animation frame may catch up on, so a stall is not repaid all at once. */
+const MAX_CATCHUP_MS = 100;
 
 interface LiveState {
   score: number; distance: number; coins: number;
-  lives: number; multiplier: number; speed: number;
+  multiplier: number; speed: number;
 }
 
 interface Props {
@@ -24,29 +37,35 @@ interface Props {
   isPaused:     boolean;
   soundOn:      boolean;
   onLiveState:  (s: LiveState) => void;
+  /** When supplied, this drives the runner instead of the keyboard. */
+  driver?:      GameDriver;
 }
 
 export default function GameCanvas({
-  difficulty, highScore, onGameOver, onPause, isPaused, soundOn, onLiveState,
+  difficulty, highScore, onGameOver, onPause, isPaused, soundOn, onLiveState, driver,
 }: Props) {
   const hudTimer = useRef(0);
+  /** Simulation time owed but not yet stepped, in ms. Doubles as the render lerp. */
+  const carryRef = useRef(0);
   const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<Renderer3D | null>(null);
   const stateRef   = useRef<GameState>(initGameState(difficulty, highScore));
   const { consumeInput, fireInput } = useInput();
   const [started, setStarted] = useState(false);
 
-  // ── Resize canvas to fill container ────────────────────────────────────────
+  // ── WebGL renderer, sized to its container ─────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const resize = () => {
-      canvas.width  = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
+    const r3d = createRenderer3D(canvas);
+    rendererRef.current = r3d;
+    const ro = new ResizeObserver(() => r3d.resize());
     ro.observe(canvas);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      rendererRef.current = null;
+      r3d.dispose();
+    };
   }, []);
 
   // ── Audio init & sounds on state change ────────────────────────────────────
@@ -64,18 +83,62 @@ export default function GameCanvas({
     if (soundOn) startMusic();
   }, [difficulty, highScore]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── One simulation step ─────────────────────────────────────────────────────
+  const step = useCallback((state: GameState, human: InputState) => {
+    // Sound cues (sample once per step before update)
+    const prevAction = state.player.action;
+    const prevCoins  = state.coins;
+    const prevStatus = state.status;
+
+    // A driver sees the frame first, then answers for it. While one is
+    // attached the keyboard is ignored, so there is never any doubt about
+    // who moved the runner.
+    driver?.observe(state);
+    const input: InputState = driver
+      ? { ...NO_INPUT, ...driver.consume() }
+      : human;
+
+    updateGame(state, input);
+
+    // Trigger SFX on state changes
+    if (soundOn) {
+      if (state.player.action !== prevAction) {
+        if (state.player.action === 'jumping')  playSfx('jump');
+        if (state.player.action === 'sliding')  playSfx('slide');
+      }
+      // A hit is the end of the run now, so the crash cue rides the transition
+      // out of 'playing' rather than the stumble that no longer happens.
+      if (state.status === 'gameover' && prevStatus === 'playing') playSfx('hit');
+      if (state.coins > prevCoins) playSfx('coin');
+      if (state.turnWarning?.completed && state.turnWarning.timer === state.turnWarning.maxTimer - 1) {
+        playSfx('turn');
+      }
+    }
+
+    // Report live state to HUD every ~4 steps
+    hudTimer.current++;
+    if (hudTimer.current >= 4) {
+      hudTimer.current = 0;
+      onLiveState({
+        score: Math.floor(state.score),
+        distance: state.distance,
+        coins: state.coins,
+        multiplier: state.scoreMultiplier,
+        speed: state.speed,
+      });
+    }
+  }, [driver, soundOn, onLiveState]);
+
   // ── Main loop ───────────────────────────────────────────────────────────────
-  const tick = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const tick = useCallback((dt: number) => {
+    const r3d = rendererRef.current;
+    if (!r3d) return;
 
     const state = stateRef.current;
 
-    // Handle pause toggle
-    const input = consumeInput();
-    if (input.pause) {
+    // Always drained, so held keys never pile up in the queue.
+    const human = consumeInput();
+    if (human.pause) {
       onPause();
       return;
     }
@@ -86,39 +149,16 @@ export default function GameCanvas({
     }
 
     if (!isPaused && state.status === 'playing') {
-      // Sound cues (sample once per frame before update)
-      const prevAction = state.player.action;
-      const prevCoins  = state.coins;
-
-      updateGame(state, input);
-
-      // Trigger SFX on state changes
-      if (soundOn) {
-        if (state.player.action !== prevAction) {
-          if (state.player.action === 'jumping')  playSfx('jump');
-          if (state.player.action === 'sliding')  playSfx('slide');
-          if (state.player.action === 'stumbling') playSfx('hit');
-        }
-        if (state.coins > prevCoins) playSfx('coin');
-        if (state.turnWarning?.completed && state.turnWarning.timer === state.turnWarning.maxTimer - 1) {
-          playSfx('turn');
-        }
+      carryRef.current = Math.min(carryRef.current + dt, MAX_CATCHUP_MS);
+      // A queued keypress belongs to one step, not to every step this frame.
+      let pressed: InputState | null = human;
+      while (carryRef.current >= STEP_MS && state.status === 'playing') {
+        carryRef.current -= STEP_MS;
+        step(state, pressed ?? NO_INPUT);
+        pressed = null;
       }
-
-      // Report live state to HUD every ~4 frames
-      hudTimer.current++;
-      if (hudTimer.current >= 4) {
-        hudTimer.current = 0;
-        onLiveState({
-          score: Math.floor(state.score),
-          distance: state.distance,
-          coins: state.coins,
-          lives: state.lives,
-          multiplier: state.scoreMultiplier,
-          speed: state.speed,
-        });
-      }
-
+    } else {
+      carryRef.current = 0;
     }
 
     // Game over check (outside the 'playing' guard so it fires even after updateGame sets it)
@@ -134,8 +174,8 @@ export default function GameCanvas({
       state.status = 'menu' as typeof state.status;
     }
 
-    render(ctx, canvas, state);
-  }, [consumeInput, isPaused, onGameOver, onPause, soundOn]);
+    r3d.render(state, carryRef.current / STEP_MS);
+  }, [consumeInput, isPaused, onGameOver, onPause, soundOn, step]);
 
   useGameLoop(tick, started);
 
@@ -148,10 +188,11 @@ export default function GameCanvas({
       <canvas
         ref={canvasRef}
         className="w-full h-full block"
-        style={{ touchAction: 'none', imageRendering: 'pixelated' }}
+        style={{ touchAction: 'none' }}
       />
 
       {/* Mobile control buttons */}
+      {!driver && (
       <div className="absolute bottom-6 left-0 right-0 flex justify-between items-end px-4 pointer-events-none md:hidden">
         {/* Left / Right */}
         <div className="flex gap-3 pointer-events-auto">
@@ -164,16 +205,21 @@ export default function GameCanvas({
           <MobileBtn label="▼ SLIDE" onPress={btn('down')} color="orange" />
         </div>
       </div>
+      )}
 
-      {/* Pause button (top-right) */}
+      {/* Pause button. Sits below the HUD's top row rather than in the corner,
+          which is where the distance readout lives. The watch scene has its own
+          in the control strip, so this one is hidden there. */}
+      {!driver && (
       <button
         onClick={onPause}
-        className="absolute top-4 right-4 text-white/70 hover:text-white text-sm font-mono
-                   bg-black/30 backdrop-blur-sm border border-white/10 rounded px-3 py-1.5
+        className="absolute top-[72px] right-3 text-white/70 hover:text-white text-sm font-mono
+                   bg-black/40 backdrop-blur-sm border border-white/15 rounded px-3 py-1.5
                    transition-colors active:scale-95"
       >
         ⏸ PAUSE
       </button>
+      )}
     </div>
   );
 }

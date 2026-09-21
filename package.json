@@ -5,13 +5,20 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "simulate": "bun run scripts/simulate.ts",
+    "check:collisions": "bun run scripts/check-collisions.ts"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "^4.0.87",
+    "@types/three": "^0.186.0",
+    "ai": "^7.0.107",
     "framer-motion": "^12.36.0",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,5 +27,6 @@
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
     "typescript": "^5"
-  }
+  },
+  "description": "Jev, TypeSafe AI's System One model, playing a neon endless runner live on structured game state."
 }

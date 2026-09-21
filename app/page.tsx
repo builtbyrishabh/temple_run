@@ -11,7 +11,7 @@ import MainMenu  from '@/components/game/MainMenu';
 import HUD       from '@/components/game/HUD';
 import GameOver  from '@/components/game/GameOver';
 import PauseMenu from '@/components/game/PauseMenu';
-import { getAllHighScores } from '@/hooks/useHighScore';
+import { getAllHighScores, useAllHighScores } from '@/hooks/useHighScore';
 import type { Difficulty } from '@/types/game';
 
 // Canvas uses browser APIs – load only on client
@@ -24,7 +24,7 @@ interface RunResult { score: number; distance: number; coins: number; }
 // Shared live HUD state passed up from GameCanvas via callback
 interface LiveState {
   score: number; distance: number; coins: number;
-  lives: number; multiplier: number; speed: number;
+  multiplier: number; speed: number;
 }
 
 export default function Home() {
@@ -33,12 +33,11 @@ export default function Home() {
   const [isPaused,   setIsPaused]   = useState(false);
   const [soundOn,    setSoundOn]    = useState(true);
   const [result,     setResult]     = useState<RunResult | null>(null);
-  const [highScores, setHighScores] = useState(() => getAllHighScores());
+  const { highScores, refresh: refreshScores } = useAllHighScores();
   const [liveState,  setLiveState]  = useState<LiveState>({
-    score: 0, distance: 0, coins: 0, lives: 3, multiplier: 1, speed: 8,
+    score: 0, distance: 0, coins: 0, multiplier: 1, speed: 8,
   });
 
-  const refreshScores = useCallback(() => setHighScores(getAllHighScores()), []);
 
   const handleStart = useCallback((d: Difficulty) => {
     setDifficulty(d);
@@ -101,7 +100,6 @@ export default function Home() {
               score={liveState.score}
               distance={Math.floor(liveState.distance)}
               coins={liveState.coins}
-              lives={liveState.lives}
               highScore={highScores[difficulty]}
               multiplier={liveState.multiplier}
               speed={liveState.speed}

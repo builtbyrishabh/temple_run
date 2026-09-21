@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getAllHighScores } from '@/hooks/useHighScore';
+import { useAllHighScores } from '@/hooks/useHighScore';
 import type { Difficulty } from '@/types/game';
 
 interface Props {
@@ -22,7 +22,7 @@ const DIFFICULTIES: { id: Difficulty; label: string; desc: string; color: string
 
 export default function MainMenu({ onStart, soundOn, onToggleSound }: Props) {
   const [selected, setSelected] = useState<Difficulty>('medium');
-  const scores = getAllHighScores();
+  const { highScores: scores } = useAllHighScores();
 
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center
@@ -137,6 +137,19 @@ export default function MainMenu({ onStart, soundOn, onToggleSound }: Props) {
       >
         {soundOn ? '🔊 Sound ON' : '🔇 Sound OFF'}
       </motion.button>
+
+      {/* Watch Jev play instead */}
+      <motion.a
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.7 }}
+        href="/watch"
+        className="relative z-10 mt-6 text-cyan-300/60 hover:text-cyan-300
+                   text-xs font-mono tracking-wider transition-colors
+                   border-b border-cyan-300/20 hover:border-cyan-300/60 pb-0.5"
+      >
+        or watch Jev play it →
+      </motion.a>
     </div>
   );
 }

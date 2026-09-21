@@ -4,9 +4,12 @@
 
 export type GameStatus = 'menu' | 'starting' | 'playing' | 'paused' | 'gameover';
 export type Difficulty = 'easy' | 'medium' | 'hard';
-export type PlayerAction = 'running' | 'jumping' | 'sliding' | 'stumbling';
+export type PlayerAction = 'running' | 'jumping' | 'sliding';
 export type Lane = 0 | 1 | 2;
-export type ObstacleType = 'WALL' | 'LOW_WALL' | 'HIGH_BAR' | 'TURN_LEFT' | 'TURN_RIGHT';
+
+/** Obstacles that occupy the corridor and can be collided with. */
+export type SolidObstacleType = 'WALL' | 'LOW_WALL' | 'HIGH_BAR';
+export type ObstacleType = SolidObstacleType | 'TURN_LEFT' | 'TURN_RIGHT';
 
 // ── Player ────────────────────────────────────────────────────────────────────
 export interface Player {
@@ -17,8 +20,6 @@ export interface Player {
   actionT: number;      // 0→1  progress through current action
   actionDuration: number; // total frames for current action
   worldY: number;       // height above ground (world units); 0 = on ground
-  isInvincible: boolean;
-  invincibleTimer: number;
   animFrame: number;    // 0-3 running leg animation
   animTimer: number;
 }
@@ -68,7 +69,6 @@ export interface GameState {
   score: number;
   distance: number;   // meters
   coins: number;
-  lives: number;
   speed: number;      // world-Z units per frame
   cameraZ: number;    // how far we have traveled
   player: Player;
@@ -92,4 +92,18 @@ export interface InputState {
   up: boolean;
   down: boolean;
   pause: boolean;
+}
+// ── External driver (optional) ────────────────────────────────────────────────
+/**
+ * Something other than a human driving the runner: it watches each frame and
+ * supplies input pulses in the same vocabulary the keyboard produces.
+ *
+ * The game deliberately knows nothing about who or what is on the other end —
+ * only that input can come from somewhere that also wants to see the state.
+ */
+export interface GameDriver {
+  /** Called once per frame with the live state, immediately before the update. */
+  observe: (state: Readonly<GameState>) => void;
+  /** Whatever the driver wants pressed on this frame. */
+  consume: () => Partial<InputState>;
 }
