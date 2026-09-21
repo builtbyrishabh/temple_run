@@ -108,7 +108,7 @@ function midiToHz(midi: number): number {
 
 // ── Sound effects ──────────────────────────────────────────────────────────────
 
-export function playSfx(type: 'jump' | 'slide' | 'coin' | 'hit' | 'turn' | 'gameover'): void {
+export function playSfx(type: 'jump' | 'slide' | 'coin' | 'hit' | 'gameover'): void {
   if (!sfxGain) initAudio();
   const ac = getCtx();
   const now = ac.currentTime;
@@ -118,7 +118,6 @@ export function playSfx(type: 'jump' | 'slide' | 'coin' | 'hit' | 'turn' | 'game
     case 'slide':   playSlide(ac, now);    break;
     case 'coin':    playCoin(ac, now);     break;
     case 'hit':     playHit(ac, now);      break;
-    case 'turn':    playTurn(ac, now);     break;
     case 'gameover':playGameOver(ac, now); break;
   }
 }
@@ -184,18 +183,6 @@ function playHit(ac: AudioContext, t: number): void {
   g2.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
   osc.connect(g2); g2.connect(sfxGain!);
   osc.start(t); osc.stop(t + 0.3);
-}
-
-function playTurn(ac: AudioContext, t: number): void {
-  const osc = ac.createOscillator();
-  osc.type = 'square';
-  osc.frequency.setValueAtTime(440, t);
-  osc.frequency.exponentialRampToValueAtTime(660, t + 0.1);
-  const g = ac.createGain();
-  g.gain.setValueAtTime(0.35, t);
-  g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-  osc.connect(g); g.connect(sfxGain!);
-  osc.start(t); osc.stop(t + 0.18);
 }
 
 function playGameOver(ac: AudioContext, t: number): void {
