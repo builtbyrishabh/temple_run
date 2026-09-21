@@ -62,6 +62,12 @@ export interface TurnWarning {
   completed: boolean;
 }
 
+// ── Presentation events ──────────────────────────────────────────────────────
+/** A one-step fact the presentation layer can turn into sound and 3D effects. */
+export type RunEvent =
+  | { kind: 'coin'; lane: Lane; worldZ: number }
+  | { kind: 'crash'; lane: Lane; worldZ: number; obstacle: SolidObstacleType | 'TURN' };
+
 // ── Full game state ───────────────────────────────────────────────────────────
 export interface GameState {
   status: GameStatus;
@@ -75,6 +81,8 @@ export interface GameState {
   obstacles: Obstacle[];
   coinItems: CoinItem[];
   particles: Particle[];
+  /** Cleared at the start of each simulation step. */
+  events: RunEvent[];
   highScore: number;
   scoreMultiplier: number;
   nextObstacleZ: number;  // world-Z at which to spawn next obstacle cluster

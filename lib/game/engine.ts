@@ -14,7 +14,7 @@ import {
 } from '../constants';
 import { lerp, pick, randInt } from '../utils';
 import type {
-  GameState, Player, Obstacle, CoinItem, Particle,
+  GameState, Player, Obstacle, CoinItem, Particle, RunEvent,
   InputState, Difficulty, Lane, ObstacleType, SolidObstacleType,
 } from '../../types/game';
 
@@ -144,6 +144,7 @@ export function initGameState(difficulty: Difficulty, highScore: number): GameSt
     obstacles: [],
     coinItems: [],
     particles: [],
+    events: [],
     highScore,
     scoreMultiplier: 1,
     // Opening beats, near enough to arrive promptly rather than after a full
@@ -163,6 +164,7 @@ export function initGameState(difficulty: Difficulty, highScore: number): GameSt
 export function updateGame(state: GameState, input: InputState): void {
   if (state.status !== 'playing') return;
 
+  state.events.length = 0;
   state.frameCount++;
 
   // Speed ramp-up
@@ -273,7 +275,12 @@ function handleTurnWarning(state: GameState, input: InputState): void {
       // and asks for a single press, so letting it expire is as much a failure
       // to read the corridor as running into a train, and costs the same.
       tw.completed = true;
-      endRun(state, 240, 400);
+      endRun(state, 240, 400, {
+        kind: 'crash',
+        lane: state.player.targetLane,
+        worldZ: tw.worldZ,
+        obstacle: 'TURN',
+      });
     }
   }
 
@@ -412,7 +419,12 @@ function checkCollisions(state: GameState): void {
     if (!blocksVertically(obs.type, p)) continue;
 
     obs.passed = true;
-    endRun(state, 240, 580);
+    endRun(state, 240, 580, {
+      kind: 'crash',
+      lane: effectiveLane,
+      worldZ: obs.worldZ,
+      obstacle: obs.type,
+    });
     return;
   }
 
@@ -428,6 +440,7 @@ function checkCollisions(state: GameState): void {
     state.score += COIN_VALUE;
     const cx = laneScreenX(coin.lane);
     spawnParticlesBurst(state, cx, 500, 8, '#ffe600');
+    state.events.push({ kind: 'coin', lane: coin.lane, worldZ: coin.worldZ });
   }
 }
 
@@ -459,10 +472,16 @@ function playerTop(p: Player): number {
  * corridor is answered or it is not, and the runner gets one move per wave to
  * answer it with.
  */
-function endRun(state: GameState, px: number, py: number): void {
+function endRun(
+  state: GameState,
+  px: number,
+  py: number,
+  crash: Extract<RunEvent, { kind: 'crash' }>,
+): void {
   if (state.status !== 'playing') return;
   state.status = 'gameover';
   spawnParticlesBurst(state, px, py, 16, '#ff3355');
+  state.events.push(crash);
   if (state.score > state.highScore) state.highScore = Math.floor(state.score);
 }
 

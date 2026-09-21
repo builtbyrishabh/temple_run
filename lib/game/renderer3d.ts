@@ -18,10 +18,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   LANE_WORLD_X, TRACK_HALF_W, PLAYER_Z, PLAYER_WORLD_HEIGHT,
   WALL_HEIGHT, LOW_WALL_HEIGHT, HIGH_BAR_BOTTOM, HIGH_BAR_THICKNESS,
-  NEAR_Z, FAR_Z, OBSTACLE_DEPTH,
+  NEAR_Z, FAR_Z, OBSTACLE_DEPTH, INITIAL_SPEED, LANE_CHANGE_FRAMES,
 } from '../constants';
-import { lerp, smoothstep } from '../utils';
-import type { GameState, Obstacle, Lane } from '../../types/game';
+import { clamp, lerp, smoothstep } from '../utils';
+import type { GameState, Obstacle, Lane, RunEvent } from '../../types/game';
 
 /** Width of one lane in world units. */
 const LANE_W = (TRACK_HALF_W * 2) / 3;
@@ -72,6 +72,31 @@ const HOUSE_NEAR = 250;      // keep the nearest house ahead of the camera
 const HOUSE_SETBACK = 340;
 const SLEEPER_SPACING = 48;  // world units per railway texture tile
 
+// ── Runner animation ─────────────────────────────────────────────────────────
+// These ranges isolate the actual move from longer run-jump-run source takes.
+export const SOURCE_FPS = 30;
+export const CLIP_TRIM: Record<string, readonly [number, number]> = {
+  jump: [17, 34],
+  roll: [10, 40],
+  die: [10, 44],
+};
+
+/** The result overlay waits exactly long enough for the fatal reaction. */
+export const DEATH_SECONDS = (CLIP_TRIM.die[1] - CLIP_TRIM.die[0]) / SOURCE_FPS;
+
+const CADENCE_EXPONENT = 0.35;
+const FADE_RUN = 0.12;
+const FADE_ACTION = 0.06;
+const LEAN_RADIANS = 0.30;
+const LAND_SQUASH = 0.14;
+const LAND_SECONDS = 0.22;
+
+const SHAKE_UNITS = 22;
+const SHAKE_SECONDS = 0.35;
+const SETTLE_SECONDS = 0.9;
+/** Positive Z is the camera-facing side of a gate. */
+export const TURN_SIGN_Z = 64;
+
 const GLB = (name: string) => `/assets/glb/${name}.glb`;
 
 export interface Renderer3D {
@@ -81,9 +106,125 @@ export interface Renderer3D {
    * yet taken — the caller runs a fixed 60Hz step, so on a faster display this
    * is what keeps the corridor sliding instead of advancing in visible jerks.
    */
-  render(state: Readonly<GameState>, lerp?: number): void;
+  render(state: Readonly<GameState>, lerp?: number, events?: readonly RunEvent[]): void;
   resize(): void;
   dispose(): void;
+}
+
+const SPARK_COLOUR = {
+  coin: new THREE.Color(0xffd23f),
+  crash: new THREE.Color(0xff4d3d),
+  dust: new THREE.Color(0xbfae94),
+} as const;
+
+const SPARK_CAPACITY = 300;
+const SPARK_GRAVITY = -900;
+
+/** A single world-space point cloud for short collection, landing, and crash bursts. */
+class Sparks {
+  private readonly x = new Float32Array(SPARK_CAPACITY);
+  private readonly y = new Float32Array(SPARK_CAPACITY);
+  private readonly z = new Float32Array(SPARK_CAPACITY);
+  private readonly vx = new Float32Array(SPARK_CAPACITY);
+  private readonly vy = new Float32Array(SPARK_CAPACITY);
+  private readonly vz = new Float32Array(SPARK_CAPACITY);
+  private readonly life = new Float32Array(SPARK_CAPACITY);
+  private readonly span = new Float32Array(SPARK_CAPACITY);
+  private readonly tint = Array.from({ length: SPARK_CAPACITY }, () => new THREE.Color());
+  private count = 0;
+
+  private readonly positions = new Float32Array(SPARK_CAPACITY * 3);
+  private readonly colours = new Float32Array(SPARK_CAPACITY * 3);
+  readonly points: THREE.Points;
+
+  constructor() {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(this.colours, 3));
+    geometry.setDrawRange(0, 0);
+    this.points = new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        size: 14,
+        sizeAttenuation: true,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    this.points.frustumCulled = false;
+  }
+
+  burst(
+    at: { x: number; y: number; worldZ: number },
+    count: number,
+    colour: THREE.Color,
+    speed: number,
+    seconds: number,
+  ): void {
+    for (let i = 0; i < count && this.count < SPARK_CAPACITY; i++) {
+      const n = this.count++;
+      const angle = Math.random() * Math.PI * 2;
+      const pitch = Math.random() * Math.PI * 0.5;
+      const velocity = speed * (0.5 + Math.random() * 0.5);
+      this.x[n] = at.x;
+      this.y[n] = at.y;
+      this.z[n] = at.worldZ;
+      this.vx[n] = Math.cos(angle) * Math.cos(pitch) * velocity;
+      this.vy[n] = Math.sin(pitch) * velocity;
+      this.vz[n] = Math.sin(angle) * Math.cos(pitch) * velocity;
+      this.span[n] = seconds * (0.6 + Math.random() * 0.6);
+      this.life[n] = this.span[n];
+      this.tint[n].copy(colour);
+    }
+  }
+
+  update(delta: number, cameraZ: number): void {
+    for (let i = this.count - 1; i >= 0; i--) {
+      this.life[i] -= delta;
+      if (this.life[i] <= 0) {
+        this.swapRemove(i);
+        continue;
+      }
+
+      this.vy[i] += SPARK_GRAVITY * delta;
+      this.x[i] += this.vx[i] * delta;
+      this.y[i] += this.vy[i] * delta;
+      this.z[i] += this.vz[i] * delta;
+      if (this.y[i] < 0) {
+        this.y[i] = 0;
+        this.vy[i] *= -0.35;
+      }
+
+      const fade = this.life[i] / this.span[i];
+      this.positions[i * 3] = this.x[i];
+      this.positions[i * 3 + 1] = this.y[i];
+      this.positions[i * 3 + 2] = -(this.z[i] - cameraZ);
+      this.colours[i * 3] = this.tint[i].r * fade;
+      this.colours[i * 3 + 1] = this.tint[i].g * fade;
+      this.colours[i * 3 + 2] = this.tint[i].b * fade;
+    }
+
+    const geometry = this.points.geometry;
+    geometry.setDrawRange(0, this.count);
+    geometry.attributes.position.needsUpdate = true;
+    geometry.attributes.color.needsUpdate = true;
+  }
+
+  private swapRemove(index: number): void {
+    const last = --this.count;
+    if (index === last) return;
+    this.x[index] = this.x[last];
+    this.y[index] = this.y[last];
+    this.z[index] = this.z[last];
+    this.vx[index] = this.vx[last];
+    this.vy[index] = this.vy[last];
+    this.vz[index] = this.vz[last];
+    this.life[index] = this.life[last];
+    this.span[index] = this.span[last];
+    this.tint[index].copy(this.tint[last]);
+  }
 }
 
 /** A one-pixel-wide vertical gradient, which three stretches across the viewport. */
@@ -267,13 +408,45 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
 
   // ── Loaded models ──────────────────────────────────────────────────────────
   const loader = new GLTFLoader();
-  const pools: Partial<Record<'train' | 'low' | 'bar' | 'coin' | 'gate', Pool>> = {};
+  const pools: Partial<Record<'train' | 'low' | 'bar' | 'coin' | 'turnLeft' | 'turnRight', Pool>> = {};
   const houses: { obj: THREE.Object3D; side: 1 | -1; slot: number }[] = [];
 
-  let runner: THREE.Object3D | null = null;
+  const runner = new THREE.Group();
+  scene.add(runner);
+  let runnerReady = false;
   let mixer: THREE.AnimationMixer | null = null;
   let clips: Record<string, THREE.AnimationAction> = {};
   let currentClip = '';
+
+  const sparks = new Sparks();
+  scene.add(sparks.points);
+
+  const arrowTextures: THREE.CanvasTexture[] = [];
+
+  function turnSign(direction: 'left' | 'right'): THREE.Mesh {
+    const sign = document.createElement('canvas');
+    sign.width = 256;
+    sign.height = 128;
+    const context = sign.getContext('2d')!;
+    context.fillStyle = '#082d27';
+    context.fillRect(0, 0, sign.width, sign.height);
+    context.strokeStyle = '#5dffcf';
+    context.lineWidth = 10;
+    context.strokeRect(5, 5, sign.width - 10, sign.height - 10);
+    context.fillStyle = '#5dffcf';
+    context.font = 'bold 96px sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(direction === 'left' ? '←' : '→', 128, 66);
+
+    const texture = new THREE.CanvasTexture(sign);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    arrowTextures.push(texture);
+    return new THREE.Mesh(
+      new THREE.PlaneGeometry(TRACK_HALF_W * 1.15, 130),
+      new THREE.MeshBasicMaterial({ map: texture, transparent: true }),
+    );
+  }
 
   const load = (name: string) =>
     loader.loadAsync(GLB(name)).then(gltf => {
@@ -304,7 +477,15 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
 
   load('roadblock1').then(({ scene: model }) => {
     fitTo(model, { x: TRACK_HALF_W * 2, y: WALL_HEIGHT * 0.9, z: 120 });
-    pools.gate = new Pool(() => anchored(model.clone(true)), scene);
+    const makeGate = (direction: 'left' | 'right') => {
+      const gate = anchored(model.clone(true));
+      const sign = turnSign(direction);
+      sign.position.set(0, WALL_HEIGHT * 0.82, TURN_SIGN_Z);
+      gate.add(sign);
+      return gate;
+    };
+    pools.turnLeft = new Pool(() => makeGate('left'), scene);
+    pools.turnRight = new Pool(() => makeGate('right'), scene);
   });
 
   load('coin').then(({ scene: model }) => {
@@ -349,20 +530,24 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     });
   });
 
-  // The runner, with the clip names the engine's four actions map onto.
+  // The runner, with action clips trimmed to the movement they depict.
   load('player1').then(gltf => {
     const model = gltf.scene;
     fitTo(model, { y: PLAYER_WORLD_HEIGHT });
     groundIt(model);
     model.rotation.y = Math.PI;  // face away from the camera, down the track
-    runner = model;
-    scene.add(model);
+    runner.add(model);
+    runnerReady = true;
 
     mixer = new THREE.AnimationMixer(model);
     clips = {};
     for (const clip of gltf.animations) {
-      const action = mixer.clipAction(clip);
-      if (clip.name === 'jump' || clip.name === 'roll' || clip.name === 'die') {
+      const trim = CLIP_TRIM[clip.name];
+      const used = trim
+        ? THREE.AnimationUtils.subclip(clip, clip.name, trim[0], trim[1], SOURCE_FPS)
+        : clip;
+      const action = mixer.clipAction(used);
+      if (trim) {
         action.loop = THREE.LoopOnce;
         action.clampWhenFinished = true;
       }
@@ -371,10 +556,10 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   });
 
   /** Cross-fade the runner into the clip for an engine action. */
-  function playClip(name: string): void {
+  function playClip(name: string, fade: number): void {
     if (!clips[name] || currentClip === name) return;
-    if (currentClip && clips[currentClip]) clips[currentClip].fadeOut(0.12);
-    clips[name].reset().fadeIn(0.12).play();
+    if (currentClip && clips[currentClip]) clips[currentClip].fadeOut(fade);
+    clips[name].reset().fadeIn(fade).play();
     currentClip = name;
   }
 
@@ -383,6 +568,11 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     jumping: 'jump',
     sliding: 'roll',
   };
+
+  function holdAtProgress(action: THREE.AnimationAction, progress: number): void {
+    action.paused = true;
+    action.time = clamp(progress, 0, 1) * action.getClip().duration;
+  }
 
   function resize(): void {
     const w = canvas.clientWidth || canvas.width;
@@ -400,8 +590,11 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   resize();
 
   let lastFrame = performance.now();
+  let sinceImpact: number | null = null;
+  let sinceLanding = Infinity;
+  let wasAirborne = false;
 
-  function render(state: Readonly<GameState>, step = 0): void {
+  function render(state: Readonly<GameState>, step = 0, events: readonly RunEvent[] = []): void {
     const now = performance.now();
     const delta = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
@@ -414,19 +607,98 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     // Lateral position: the engine already tracks the lane-change progress.
     const from = LANE_WORLD_X[player.lane];
     const to = LANE_WORLD_X[player.targetLane];
-    const px = lerp(from, to, smoothstep(Math.min(1, Math.max(0, player.laneT))));
+    const laneT = clamp(player.laneT + step / LANE_CHANGE_FRAMES, 0, 1);
+    const px = lerp(from, to, smoothstep(laneT));
+
+    if (state.status === 'playing') sinceImpact = null;
+    for (const event of events) {
+      if (event.kind === 'coin') {
+        sparks.burst(
+          { x: LANE_WORLD_X[event.lane], y: 86, worldZ: event.worldZ },
+          12,
+          SPARK_COLOUR.coin,
+          260,
+          0.5,
+        );
+      } else {
+        sinceImpact = 0;
+        sparks.burst(
+          {
+            x: LANE_WORLD_X[event.lane],
+            y: PLAYER_WORLD_HEIGHT * 0.55,
+            worldZ: state.cameraZ + PLAYER_Z,
+          },
+          26,
+          SPARK_COLOUR.crash,
+          420,
+          0.7,
+        );
+      }
+    }
+    if (sinceImpact !== null && state.status !== 'playing') sinceImpact += delta;
+
+    const airborne = player.action === 'jumping';
+    if (wasAirborne && !airborne && state.status === 'playing') {
+      sinceLanding = 0;
+      sparks.burst(
+        { x: px, y: 6, worldZ: cameraZ + PLAYER_Z },
+        10,
+        SPARK_COLOUR.dust,
+        150,
+        0.35,
+      );
+    }
+    wasAirborne = airborne;
+    sinceLanding += delta;
 
     // ── Runner ───────────────────────────────────────────────────────────────
-    if (runner) {
+    if (runnerReady) {
       runner.position.set(px, player.worldY, -PLAYER_Z);
-      playClip(state.status === 'gameover' ? 'die' : CLIP_FOR[player.action] ?? 'run');
+      const dying = state.status === 'gameover';
+      const clipName = dying ? 'die' : CLIP_FOR[player.action] ?? 'run';
+      playClip(clipName, clipName === 'run' ? FADE_RUN : FADE_ACTION);
+
+      const action = clips[clipName];
+      if (action) {
+        if (clipName === 'jump' || clipName === 'roll') {
+          holdAtProgress(action, player.actionT + step / player.actionDuration);
+        } else if (clipName === 'run') {
+          action.timeScale = (state.speed / INITIAL_SPEED) ** CADENCE_EXPONENT;
+        }
+      }
+
+      const laneDirection = Math.sign(to - from);
+      runner.rotation.z = dying
+        ? 0
+        : -laneDirection * Math.sin(laneT * Math.PI) * LEAN_RADIANS;
+
+      const squash = Math.max(0, 1 - sinceLanding / LAND_SECONDS);
+      const spread = 1 + LAND_SQUASH * squash * 0.5;
+      runner.scale.set(spread, 1 - LAND_SQUASH * squash, spread);
     }
     mixer?.update(delta);
+    sparks.update(delta, cameraZ);
 
     // ── Camera and sun follow the runner ─────────────────────────────────────
+    const settle = sinceImpact === null
+      ? 0
+      : smoothstep(clamp(sinceImpact / SETTLE_SECONDS, 0, 1));
+    const shake = sinceImpact === null
+      ? 0
+      : Math.max(0, 1 - sinceImpact / SHAKE_SECONDS) ** 2;
+    const jolt = () => (Math.random() - 0.5) * SHAKE_UNITS * shake;
+
     const camX = px * CAM_LATERAL_FOLLOW;
-    camera.position.set(camX, CAM_HEIGHT, -PLAYER_Z + CAM_BACK);
-    camera.lookAt(camX, CAM_LOOK_HEIGHT, -PLAYER_Z - CAM_LOOK_AHEAD);
+    camera.position.set(
+      camX + jolt(),
+      lerp(CAM_HEIGHT, CAM_HEIGHT * 0.78, settle) + jolt(),
+      -PLAYER_Z + lerp(CAM_BACK, CAM_BACK * 0.72, settle),
+    );
+    camera.lookAt(
+      camX,
+      lerp(CAM_LOOK_HEIGHT, PLAYER_WORLD_HEIGHT * 0.4, settle),
+      -PLAYER_Z - lerp(CAM_LOOK_AHEAD, 60, settle),
+    );
 
     sun.position.set(px + 400, 900, -PLAYER_Z + 500);
     sun.target.position.set(px, 0, -PLAYER_Z - 400);
@@ -462,7 +734,8 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
       if (relZ < NEAR_Z - 400 || relZ > FAR_Z) continue;
 
       if (obs.type === 'TURN_LEFT' || obs.type === 'TURN_RIGHT') {
-        const o = pools.gate?.claim();
+        const pool = obs.type === 'TURN_LEFT' ? pools.turnLeft : pools.turnRight;
+        const o = pool?.claim();
         if (o) o.position.set(0, 0, -relZ);
         continue;
       }
@@ -489,6 +762,16 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
 
     for (const pool of Object.values(pools)) pool?.end();
 
+    const turn = state.turnWarning;
+    if (turn) {
+      const relZ = turn.worldZ - cameraZ;
+      if (relZ >= NEAR_Z - 400 && relZ <= FAR_Z) {
+        const pool = turn.direction === 'left' ? pools.turnLeft : pools.turnRight;
+        const gate = pool?.claim();
+        if (gate) gate.position.set(0, 0, -relZ);
+      }
+    }
+
     renderer.render(scene, camera);
   }
 
@@ -503,6 +786,9 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     });
     railTex.dispose();
     stoneTex.dispose();
+    for (const texture of arrowTextures) texture.dispose();
+    sparks.points.geometry.dispose();
+    (sparks.points.material as THREE.Material).dispose();
     renderer.dispose();
   }
 

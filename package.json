@@ -8,7 +8,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "simulate": "bun run scripts/simulate.ts",
-    "check:collisions": "bun run scripts/check-collisions.ts"
+    "check:collisions": "bun run scripts/check-collisions.ts",
+    "check:animation": "bun run scripts/check-animation.ts",
+    "check:feedback": "bun run scripts/check-feedback.ts"
   },
   "dependencies": {
     "@ai-sdk/gateway": "^4.0.87",

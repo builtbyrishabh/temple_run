@@ -92,7 +92,7 @@ export default function JevScene() {
 
         <div className="relative min-h-0 flex-1">
           <GameCanvas
-            key={runKey}
+            runId={runKey}
             difficulty={difficulty}
             /* Jev's runs never touch the human leaderboard. */
             highScore={0}

@@ -33,18 +33,24 @@ export default function Home() {
   const [isPaused,   setIsPaused]   = useState(false);
   const [soundOn,    setSoundOn]    = useState(true);
   const [result,     setResult]     = useState<RunResult | null>(null);
+  const [runId,      setRunId]      = useState(0);
   const { highScores, refresh: refreshScores } = useAllHighScores();
   const [liveState,  setLiveState]  = useState<LiveState>({
     score: 0, distance: 0, coins: 0, multiplier: 1, speed: 8,
   });
 
 
-  const handleStart = useCallback((d: Difficulty) => {
-    setDifficulty(d);
+  const beginRun = useCallback(() => {
     setIsPaused(false);
     setResult(null);
+    setRunId(id => id + 1);
     setScreen('playing');
   }, []);
+
+  const handleStart = useCallback((d: Difficulty) => {
+    setDifficulty(d);
+    beginRun();
+  }, [beginRun]);
 
   const handleGameOver = useCallback((score: number, distance: number, coins: number) => {
     const prev = getAllHighScores()[difficulty];
@@ -55,12 +61,6 @@ export default function Home() {
     setResult({ score, distance, coins });
     setScreen('gameover');
   }, [difficulty, refreshScores]);
-
-  const handleRestart = useCallback(() => {
-    setIsPaused(false);
-    setResult(null);
-    setScreen('playing');
-  }, []);
 
   const togglePause = useCallback(() => setIsPaused(p => !p), []);
   const toggleSound = useCallback(() => setSoundOn(s => !s), []);
@@ -83,10 +83,11 @@ export default function Home() {
           />
         )}
 
-        {/* ── Active game ── */}
-        {screen === 'playing' && (
+        {/* Keep the same renderer through impact, results, and restart. */}
+        {screen !== 'menu' && (
           <div key="game" className="absolute inset-0">
             <GameCanvas
+              runId={runId}
               difficulty={difficulty}
               highScore={highScores[difficulty]}
               onGameOver={handleGameOver}
@@ -96,17 +97,19 @@ export default function Home() {
               onLiveState={setLiveState}
             />
 
-            <HUD
-              score={liveState.score}
-              distance={Math.floor(liveState.distance)}
-              coins={liveState.coins}
-              highScore={highScores[difficulty]}
-              multiplier={liveState.multiplier}
-              speed={liveState.speed}
-            />
+            {screen === 'playing' && (
+              <HUD
+                score={liveState.score}
+                distance={Math.floor(liveState.distance)}
+                coins={liveState.coins}
+                highScore={highScores[difficulty]}
+                multiplier={liveState.multiplier}
+                speed={liveState.speed}
+              />
+            )}
 
             <AnimatePresence>
-              {isPaused && (
+              {isPaused && screen === 'playing' && (
                 <PauseMenu
                   key="pause"
                   score={liveState.score}
@@ -117,35 +120,21 @@ export default function Home() {
                   onToggleSound={toggleSound}
                 />
               )}
-            </AnimatePresence>
-          </div>
-        )}
 
-        {/* ── Game over ── */}
-        {screen === 'gameover' && result && (
-          <div key="gameover" className="absolute inset-0">
-            {/* Keep the last frame of the canvas visible behind the overlay */}
-            <div className="absolute inset-0 opacity-30 pointer-events-none">
-              <GameCanvas
-                difficulty={difficulty}
-                highScore={highScores[difficulty]}
-                onGameOver={() => {}}
-                onPause={() => {}}
-                isPaused={true}
-                soundOn={false}
-                onLiveState={() => {}}
-              />
-            </div>
-            <GameOver
-              score={result.score}
-              distance={result.distance}
-              coins={result.coins}
-              highScore={highScores[difficulty]}
-              isNewHigh={isNewHigh}
-              difficulty={difficulty}
-              onRestart={handleRestart}
-              onMenu={() => { refreshScores(); setScreen('menu'); }}
-            />
+              {screen === 'gameover' && result && (
+                <GameOver
+                  key="gameover"
+                  score={result.score}
+                  distance={result.distance}
+                  coins={result.coins}
+                  highScore={highScores[difficulty]}
+                  isNewHigh={isNewHigh}
+                  difficulty={difficulty}
+                  onRestart={beginRun}
+                  onMenu={() => { refreshScores(); setScreen('menu'); }}
+                />
+              )}
+            </AnimatePresence>
           </div>
         )}
 

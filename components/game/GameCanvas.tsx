@@ -7,9 +7,9 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import { useGameLoop }   from '@/hooks/useGameLoop';
 import { useInput }      from '@/hooks/useInput';
 import { initGameState, updateGame } from '@/lib/game/engine';
-import { createRenderer3D, type Renderer3D } from '@/lib/game/renderer3d';
+import { createRenderer3D, DEATH_SECONDS, type Renderer3D } from '@/lib/game/renderer3d';
 import { initAudio, startMusic, stopMusic, playSfx, setMusicVolume, setSfxVolume } from '@/lib/game/audio';
-import type { GameState, Difficulty, GameDriver, InputState } from '@/types/game';
+import type { GameState, Difficulty, GameDriver, InputState, RunEvent } from '@/types/game';
 
 const NO_INPUT: InputState = { left: false, right: false, up: false, down: false, pause: false };
 
@@ -23,6 +23,7 @@ const STEP_MS = 1000 / 60;
 
 /** Most simulation one animation frame may catch up on, so a stall is not repaid all at once. */
 const MAX_CATCHUP_MS = 100;
+const DEATH_HOLD_MS = DEATH_SECONDS * 1000;
 
 interface LiveState {
   score: number; distance: number; coins: number;
@@ -30,6 +31,7 @@ interface LiveState {
 }
 
 interface Props {
+  runId:        number;
   difficulty:   Difficulty;
   highScore:    number;
   onGameOver:   (score: number, distance: number, coins: number) => void;
@@ -42,9 +44,11 @@ interface Props {
 }
 
 export default function GameCanvas({
-  difficulty, highScore, onGameOver, onPause, isPaused, soundOn, onLiveState, driver,
+  runId, difficulty, highScore, onGameOver, onPause, isPaused, soundOn, onLiveState, driver,
 }: Props) {
   const hudTimer = useRef(0);
+  const deathHoldRef = useRef<number | null>(null);
+  const reportedRef = useRef(false);
   /** Simulation time owed but not yet stepped, in ms. Doubles as the render lerp. */
   const carryRef = useRef(0);
   const canvasRef  = useRef<HTMLCanvasElement>(null);
@@ -75,16 +79,19 @@ export default function GameCanvas({
     setSfxVolume(soundOn ? 0.4 : 0);
   }, [soundOn]);
 
-  // ── Restart / re-init when difficulty changes ───────────────────────────────
+  // ── Start a fresh run without rebuilding the WebGL scene ───────────────────
   useEffect(() => {
     stateRef.current = initGameState(difficulty, highScore);
     stateRef.current.status = 'playing';
+    deathHoldRef.current = null;
+    reportedRef.current = false;
+    carryRef.current = 0;
     setStarted(true);
     if (soundOn) startMusic();
-  }, [difficulty, highScore]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── One simulation step ─────────────────────────────────────────────────────
-  const step = useCallback((state: GameState, human: InputState) => {
+  const step = useCallback((state: GameState, human: InputState, events: RunEvent[]) => {
     // Sound cues (sample once per step before update)
     const prevAction = state.player.action;
     const prevCoins  = state.coins;
@@ -99,6 +106,8 @@ export default function GameCanvas({
       : human;
 
     updateGame(state, input);
+
+    events.push(...state.events);
 
     // Trigger SFX on state changes
     if (soundOn) {
@@ -148,33 +157,38 @@ export default function GameCanvas({
       state.status = 'playing';
     }
 
+    const events: RunEvent[] = [];
+
     if (!isPaused && state.status === 'playing') {
       carryRef.current = Math.min(carryRef.current + dt, MAX_CATCHUP_MS);
       // A queued keypress belongs to one step, not to every step this frame.
       let pressed: InputState | null = human;
       while (carryRef.current >= STEP_MS && state.status === 'playing') {
         carryRef.current -= STEP_MS;
-        step(state, pressed ?? NO_INPUT);
+        step(state, pressed ?? NO_INPUT, events);
         pressed = null;
       }
     } else {
       carryRef.current = 0;
     }
 
-    // Game over check (outside the 'playing' guard so it fires even after updateGame sets it)
-    if (state.status === 'gameover' && !isPaused) {
-      stopMusic();
-      if (soundOn) playSfx('gameover');
-      onGameOver(
-        Math.floor(state.score),
-        Math.floor(state.distance),
-        state.coins
-      );
-      // Prevent repeated calls
-      state.status = 'menu' as typeof state.status;
+    // Leave the terminal state visible until the trimmed death clip completes.
+    if (state.status === 'gameover') {
+      if (deathHoldRef.current === null) {
+        deathHoldRef.current = 0;
+        stopMusic();
+      } else {
+        deathHoldRef.current += dt;
+      }
+
+      if (!reportedRef.current && deathHoldRef.current >= DEATH_HOLD_MS) {
+        reportedRef.current = true;
+        if (soundOn) playSfx('gameover');
+        onGameOver(Math.floor(state.score), Math.floor(state.distance), state.coins);
+      }
     }
 
-    r3d.render(state, carryRef.current / STEP_MS);
+    r3d.render(state, carryRef.current / STEP_MS, events);
   }, [consumeInput, isPaused, onGameOver, onPause, soundOn, step]);
 
   useGameLoop(tick, started);
