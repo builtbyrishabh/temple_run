@@ -68,18 +68,10 @@ function referencePilot(sensors: Sensors): RunnerAction {
     ['right', sensors.ifItStepsRight],
   ];
 
-  // An armed gate leaves TURN_WARNING_FRAMES to answer, so there is usually time
-  // to clear the obstacle first and turn afterwards. Taking it the instant it
-  // arms is how an earlier version of this walked into walls.
-  const turn = /^a (LEFT|RIGHT) turn/.exec(sensors.turnGate);
-  const wanted = turn ? (turn[1].toLowerCase() as 'left' | 'right') : null;
-  const urgent = turn !== null && /third of a second|alongside/.test(sensors.turnGate);
-
   let best: RunnerAction = 'none';
   let bestScore = -Infinity;
   for (const [action, text] of options) {
-    let value = scoreConsequence(text);
-    if (action === wanted) value += urgent ? 200 : 6;
+    const value = scoreConsequence(text);
     if (value > bestScore) { bestScore = value; best = action; }
   }
   return best;

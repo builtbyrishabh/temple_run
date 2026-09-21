@@ -3,18 +3,17 @@
 // components/game/HUD.tsx  –  Score / distance / coins overlay
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 
 interface Props {
   score:      number;
   distance:   number;
   coins:      number;
   highScore:  number;
-  multiplier: number;
   speed:      number;
 }
 
-export default function HUD({ score, distance, coins, highScore, multiplier, speed }: Props) {
+export default function HUD({ score, distance, coins, highScore, speed }: Props) {
   const pct = Math.min(1, (speed - 8) / 22); // 0 = slow, 1 = max speed
 
   return (
@@ -47,28 +46,11 @@ export default function HUD({ score, distance, coins, highScore, multiplier, spe
           )}
         </div>
 
-        {/* Coins and the multiplier, stacked down the centre */}
-        <div className="flex flex-col items-center gap-1.5">
-          <div className="flex items-center gap-1.5 rounded-full border border-yellow-300/40
-                          bg-black/45 px-3 py-1 backdrop-blur-sm">
-            <span className="text-yellow-300 drop-shadow-[0_0_6px_#ffe600]">◈</span>
-            <span className="text-sm font-bold text-yellow-100">{coins}</span>
-          </div>
-
-          <AnimatePresence>
-            {multiplier > 1 && (
-              <motion.div
-                key={multiplier}
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.5, opacity: 0 }}
-                className="rounded-lg border border-purple-300/60 bg-purple-600/70 px-2 py-0.5
-                           text-sm font-bold text-purple-100 backdrop-blur-sm"
-              >
-                ×{multiplier.toFixed(1)}
-              </motion.div>
-            )}
-          </AnimatePresence>
+        {/* Coins */}
+        <div className="flex items-center gap-1.5 rounded-full border border-yellow-300/40
+                        bg-black/45 px-3 py-1 backdrop-blur-sm">
+          <span className="text-yellow-300 drop-shadow-[0_0_6px_#ffe600]">◈</span>
+          <span className="text-sm font-bold text-yellow-100">{coins}</span>
         </div>
 
         {/* Distance */}

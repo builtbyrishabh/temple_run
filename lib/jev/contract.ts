@@ -40,8 +40,6 @@ export interface Sensors {
   ifItJumps: string;
   /** Outcome of sliding now. */
   ifItSlides: string;
-  /** A pending directional gate, or that none is pending. */
-  turnGate: string;
 }
 
 /** What Jev decided, plus the metadata the scene shows while it plays. */

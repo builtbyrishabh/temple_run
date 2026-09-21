@@ -7,15 +7,14 @@ import {
   JUMP_HEIGHT, JUMP_FRAMES, SLIDE_FRAMES,
   LANE_CHANGE_FRAMES, PLAYER_Z, COIN_VALUE,
   SCORE_PER_FRAME, DIST_SCALE, COIN_CLUSTER_SIZE, COIN_SPACING_Z,
-  SPAWN_Z, OPENING_GAP_SECONDS, MIN_GAP_SECONDS, GAP_JITTER_SECONDS, TURN_SPACING_SECONDS,
-  TURN_JITTER_SECONDS, TURN_WARNING_FRAMES, turnArmsAtDepth,
+  SPAWN_Z, OPENING_GAP_SECONDS, MIN_GAP_SECONDS, GAP_JITTER_SECONDS,
   PLAYER_WORLD_HEIGHT, SLIDE_HEIGHT, HIGH_BAR_BOTTOM, LOW_WALL_HEIGHT,
   collisionHalfDepth,
 } from '../constants';
 import { lerp, pick, randInt } from '../utils';
 import type {
-  GameState, Player, Obstacle, CoinItem, Particle,
-  InputState, Difficulty, Lane, ObstacleType, SolidObstacleType,
+  GameState, Player, RunEvent,
+  InputState, Difficulty, Lane, ObstacleType,
 } from '../../types/game';
 
 // ── Obstacle templates per difficulty ────────────────────────────────────────
@@ -127,7 +126,6 @@ function makePlayer(): Player {
     lane: 1, targetLane: 1, laneT: 1,
     action: 'running', actionT: 0, actionDuration: 1,
     worldY: 0,
-    animFrame: 0, animTimer: 0,
   };
 }
 
@@ -143,16 +141,13 @@ export function initGameState(difficulty: Difficulty, highScore: number): GameSt
     player: makePlayer(),
     obstacles: [],
     coinItems: [],
-    particles: [],
+    events: [],
     highScore,
-    scoreMultiplier: 1,
     // Opening beats, near enough to arrive promptly rather than after a full
     // SPAWN_Z of empty corridor.
     nextObstacleZ: 1800,
     nextCoinZ: 900,
-    nextTurnZ: TURN_SPACING_SECONDS[difficulty] * 60 * INITIAL_SPEED,
     frameCount: 0,
-    turnWarning: null,
     idCounter: 0,
   };
   return state;
@@ -163,6 +158,8 @@ export function initGameState(difficulty: Difficulty, highScore: number): GameSt
 export function updateGame(state: GameState, input: InputState): void {
   if (state.status !== 'playing') return;
 
+  // Events belong to the step that produced them and to no other.
+  state.events.length = 0;
   state.frameCount++;
 
   // Speed ramp-up
@@ -173,13 +170,11 @@ export function updateGame(state: GameState, input: InputState): void {
   state.distance = state.cameraZ * DIST_SCALE;
 
   // Score (proportional to speed)
-  state.score += SCORE_PER_FRAME * (state.speed / INITIAL_SPEED) * state.scoreMultiplier;
+  state.score += SCORE_PER_FRAME * (state.speed / INITIAL_SPEED);
 
   updatePlayer(state, input);
-  handleTurnWarning(state, input);
   spawnWorld(state);
   checkCollisions(state);
-  updateParticles(state);
   pruneOld(state);
 }
 
@@ -237,50 +232,6 @@ function updatePlayer(state: GameState, input: InputState): void {
     p.actionT = 0;
     p.actionDuration = SLIDE_FRAMES;
   }
-
-  // ── Walk animation ───────────────────────────────────────────────────────
-  p.animTimer++;
-  const fps = p.action === 'running' ? 6 : 10;
-  if (p.animTimer >= fps) {
-    p.animTimer = 0;
-    p.animFrame = (p.animFrame + 1) % 4;
-  }
-}
-
-// ── Turn warning logic ────────────────────────────────────────────────────────
-
-function handleTurnWarning(state: GameState, input: InputState): void {
-  const tw = state.turnWarning;
-  if (!tw) return;
-
-  const depth = tw.worldZ - state.cameraZ;
-
-  // Activate the countdown when the gate comes within one warning's travel.
-  if (depth < turnArmsAtDepth(state.speed) && !tw.completed) {
-    tw.timer--;
-
-    const wantedDir = tw.direction;
-    const pressed = wantedDir === 'left' ? input.left : input.right;
-
-    if (pressed) {
-      // Success – clear warning, award bonus
-      tw.completed = true;
-      state.score += 200;
-      state.scoreMultiplier = Math.min(state.scoreMultiplier + 0.5, 4);
-      spawnParticlesBurst(state, 240, 400, 18, '#00ff99');
-    } else if (tw.timer <= 0) {
-      // Failed to turn in time. A gate is answerable for TURN_WARNING_SECONDS
-      // and asks for a single press, so letting it expire is as much a failure
-      // to read the corridor as running into a train, and costs the same.
-      tw.completed = true;
-      endRun(state, 240, 400);
-    }
-  }
-
-  // Remove completed warning
-  if (tw.completed && depth < PLAYER_Z) {
-    state.turnWarning = null;
-  }
 }
 
 // ── World spawning ────────────────────────────────────────────────────────────
@@ -303,14 +254,6 @@ function spawnWorld(state: GameState): void {
     const atZ = state.nextCoinZ;
     spawnCoinCluster(state, atZ);
     state.nextCoinZ = atZ + secondsToZ(state, 0.5 + Math.random() * 0.8);
-  }
-
-  // Spawn turn event
-  if (frontZ >= state.nextTurnZ) {
-    const atZ = state.nextTurnZ;
-    spawnTurn(state, atZ);
-    const turnSeconds = TURN_SPACING_SECONDS[state.difficulty] + Math.random() * TURN_JITTER_SECONDS;
-    state.nextTurnZ = atZ + secondsToZ(state, turnSeconds);
   }
 }
 
@@ -370,17 +313,6 @@ function spawnCoinCluster(state: GameState, atZ: number): void {
   }
 }
 
-function spawnTurn(state: GameState, atZ: number): void {
-  if (state.turnWarning) return; // only one at a time
-  state.turnWarning = {
-    direction: Math.random() < 0.5 ? 'left' : 'right',
-    timer: TURN_WARNING_FRAMES,
-    maxTimer: TURN_WARNING_FRAMES,
-    worldZ: atZ,
-    completed: false,
-  };
-}
-
 // ── Collision detection ───────────────────────────────────────────────────────
 
 function checkCollisions(state: GameState): void {
@@ -401,7 +333,6 @@ function checkCollisions(state: GameState): void {
   // the lane for the whole 430 units it is drawn over.
   for (const obs of state.obstacles) {
     if (obs.passed) continue;
-    if (obs.type === 'TURN_LEFT' || obs.type === 'TURN_RIGHT') continue;
 
     const offset = (obs.worldZ - camZ) - PLAYER_Z;
     const half = collisionHalfDepth(obs.type);
@@ -412,7 +343,7 @@ function checkCollisions(state: GameState): void {
     if (!blocksVertically(obs.type, p)) continue;
 
     obs.passed = true;
-    endRun(state, 240, 580);
+    endRun(state, { kind: 'crash', lane: effectiveLane, worldZ: obs.worldZ, obstacle: obs.type });
     return;
   }
 
@@ -426,8 +357,7 @@ function checkCollisions(state: GameState): void {
     coin.collected = true;
     state.coins++;
     state.score += COIN_VALUE;
-    const cx = laneScreenX(coin.lane);
-    spawnParticlesBurst(state, cx, 500, 8, '#ffe600');
+    state.events.push({ kind: 'coin', lane: coin.lane, worldZ: coin.worldZ });
   }
 }
 
@@ -439,7 +369,7 @@ function checkCollisions(state: GameState): void {
  * the feet is the whole fix: a standing runner has worldY = 0, so the old test
  * for feet above the bar's underside concluded that bars never hit anyone.
  */
-function blocksVertically(type: SolidObstacleType, p: Player): boolean {
+function blocksVertically(type: ObstacleType, p: Player): boolean {
   switch (type) {
     case 'WALL':     return true;                          // too tall to clear, reaches the ground
     case 'LOW_WALL': return p.worldY < LOW_WALL_HEIGHT;    // cleared by jumping over it
@@ -459,54 +389,14 @@ function playerTop(p: Player): number {
  * corridor is answered or it is not, and the runner gets one move per wave to
  * answer it with.
  */
-function endRun(state: GameState, px: number, py: number): void {
+function endRun(state: GameState, crash: Extract<RunEvent, { kind: 'crash' }>): void {
   if (state.status !== 'playing') return;
   state.status = 'gameover';
-  spawnParticlesBurst(state, px, py, 16, '#ff3355');
+  state.events.push(crash);
   if (state.score > state.highScore) state.highScore = Math.floor(state.score);
 }
 
-// ── Particles ──────────────────────────────────────────────────────────────────
-
-function spawnParticlesBurst(
-  state: GameState, cx: number, cy: number, count: number, color: string
-): void {
-  for (let i = 0; i < count; i++) {
-    const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
-    const spd = 2 + Math.random() * 4;
-    const life = 20 + Math.floor(Math.random() * 20);
-    state.particles.push({
-      x: cx, y: cy,
-      vx: Math.cos(angle) * spd,
-      vy: Math.sin(angle) * spd - 1,
-      life, maxLife: life,
-      color,
-      size: 2 + Math.random() * 3,
-    });
-  }
-}
-
-function updateParticles(state: GameState): void {
-  for (const p of state.particles) {
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.15; // gravity
-    p.life--;
-  }
-}
-
 function pruneOld(state: GameState): void {
-  state.particles  = state.particles.filter(p => p.life > 0);
   state.obstacles  = state.obstacles.filter(o => o.worldZ > state.cameraZ - 200);
   state.coinItems  = state.coinItems.filter(c => c.worldZ > state.cameraZ - 200);
-}
-
-// ── Utility ───────────────────────────────────────────────────────────────────
-
-/** Screen-X of a lane's centre at the player depth (PLAYER_Z) */
-function laneScreenX(lane: Lane): number {
-  // Inline constants to avoid circular deps
-  // LANE_WORLD_X = [-72, 0, 72], FOCAL = 444, PLAYER_Z = 200, CENTER_X = 240
-  const lx = [-72, 0, 72] as const;
-  return 240 + lx[lane] * 444 / 200;
 }

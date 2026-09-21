@@ -11,7 +11,7 @@ import {
   JUMP_FRAMES, JUMP_HEIGHT, LOW_WALL_HEIGHT, SLIDE_FRAMES,
   LANE_CHANGE_FRAMES, PLAYER_Z, collisionEntryZ, collisionHalfDepth,
 } from '../constants';
-import type { SolidObstacleType } from '../../types/game';
+import type { ObstacleType } from '../../types/game';
 
 // ── The collision window ─────────────────────────────────────────────────────
 // The engine does not resolve a collision at a single depth: an obstacle and
@@ -24,13 +24,13 @@ import type { SolidObstacleType } from '../../types/game';
 // what the engine enforces or from what the renderer draws.
 
 /** Frames the runner spends overlapping an obstacle of `type`. */
-function framesInsideWindow(type: SolidObstacleType, speed: number): number {
+function framesInsideWindow(type: ObstacleType, speed: number): number {
   return (2 * collisionHalfDepth(type)) / speed;
 }
 
 /** Frames until an obstacle at `worldZ` first becomes able to hit the runner. */
 export function framesToImpact(
-  worldZ: number, cameraZ: number, speed: number, type: SolidObstacleType,
+  worldZ: number, cameraZ: number, speed: number, type: ObstacleType,
 ): number {
   return (worldZ - cameraZ - collisionEntryZ(type)) / speed;
 }
@@ -116,7 +116,7 @@ export function canStillSlide(frames: number, speed: number): boolean {
  * wall and a slide a high bar, so those are the footprints the control layer
  * measures its lead from.
  */
-export const TIMED_AGAINST: Record<'jump' | 'slide', SolidObstacleType> = {
+export const TIMED_AGAINST: Record<'jump' | 'slide', ObstacleType> = {
   jump: 'LOW_WALL',
   slide: 'HIGH_BAR',
 };

@@ -40,7 +40,6 @@ const SENSOR_ROWS: { key: keyof Sensors; label: string }[] = [
   { key: 'ifItStepsRight', label: 'if it steps right' },
   { key: 'ifItJumps', label: 'if it jumps' },
   { key: 'ifItSlides', label: 'if it slides' },
-  { key: 'turnGate', label: 'turn gate' },
 ];
 
 export default function JevPanel({ status }: { status: JevStatus }) {

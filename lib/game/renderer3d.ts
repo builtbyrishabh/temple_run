@@ -18,10 +18,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   LANE_WORLD_X, TRACK_HALF_W, PLAYER_Z, PLAYER_WORLD_HEIGHT,
   WALL_HEIGHT, LOW_WALL_HEIGHT, HIGH_BAR_BOTTOM, HIGH_BAR_THICKNESS,
-  NEAR_Z, FAR_Z, OBSTACLE_DEPTH,
+  NEAR_Z, FAR_Z, OBSTACLE_DEPTH, INITIAL_SPEED, LANE_CHANGE_FRAMES,
 } from '../constants';
-import { lerp, smoothstep } from '../utils';
-import type { GameState, Obstacle, Lane } from '../../types/game';
+import { clamp, lerp, smoothstep } from '../utils';
+import { createWorld, enableShadows } from './three/world';
+import type { GameState, Lane, RunEvent } from '../../types/game';
 
 /** Width of one lane in world units. */
 const LANE_W = (TRACK_HALF_W * 2) / 3;
@@ -46,31 +47,59 @@ const CAM_BASE_ASPECT = 1.5;
  *  stays roughly centred, so a lane change reads as the runner moving. */
 const CAM_LATERAL_FOLLOW = 0.55;
 
-// ── Scene tuning ─────────────────────────────────────────────────────────────
-/** Horizon colour. Fog resolves to this, so distance fades into the skyline. */
-const SKY = 0xdceefc;
-// Zenith colour, for the gradient — a flat sky left the upper half a white
-// void. Kept close to SKY on purpose: fog resolves scenery to SKY, so the
-// further the zenith drifts from it the more distant rooflines read as white
-// holes punched in the sky rather than as haze.
-const SKY_TOP = '#a9cde9';
-// Fog has to finish before FAR_Z, because that is where obstacles are culled and
-// a train must not appear out of clear air. Just as important is that the range
-// be *long*: squeezed into a few hundred units it compresses into a handful of
-// pixels and reads as a white wall across the track. Spread over thousands it
-// reads as air, and the corridor looks like it carries on past the horizon.
-const FOG_NEAR = 2200;
-const FOG_FAR = 6000;
-// Span (SPACING x SLOTS) runs well past FOG_FAR, so the row wraps inside the
-// haze and the recycling is never visible.
-const HOUSE_SPACING = 760;   // world units between houses along one side
-const HOUSE_SLOTS = 9;       // instances per side, recycled as the camera moves
-const HOUSE_HEIGHT = 440;
-const HOUSE_MAX_WIDTH = 440;
-const HOUSE_NEAR = 250;      // keep the nearest house ahead of the camera
-/** Gap between the track edge and the near face of a house row. */
-const HOUSE_SETBACK = 340;
-const SLEEPER_SPACING = 48;  // world units per railway texture tile
+// ── Runner animation ─────────────────────────────────────────────────────────
+//
+// None of the imported clips is the length of the action it illustrates. `jump`
+// is a 1.93s run-jump-run take around a jump the engine gives 34 frames (0.57s);
+// `roll` is a 1.83s tumble around a 30-frame (0.5s) slide. Played whole, the
+// clip is still crouching to take off when the runner has already landed.
+//
+// So each is trimmed to the part that *is* the action. The ranges below were
+// measured off the clips themselves — the frames between the runner's feet
+// leaving the ground and touching it again for `jump`, and the frames its hips
+// spend below standing height for `roll` — rather than guessed:
+//
+//   jump  f17–f34  the leap between the two running strides, 0.567s, which is
+//                  34 frames at 60fps: the engine's jump window exactly
+//   roll  f10–f40  down into the tumble and back up, 1.0s, played at 2× to fit
+//                  the 0.5s slide
+//   die   f10–f44  the stagger and the fall, minus the lying still afterwards
+export const SOURCE_FPS = 30;
+export const CLIP_TRIM: Record<string, readonly [number, number]> = {
+  jump: [17, 34],
+  roll: [10, 40],
+  die:  [10, 44],
+};
+
+/** How long the death clip runs, and so how long an impact needs before results. */
+export const DEATH_SECONDS = (CLIP_TRIM.die[1] - CLIP_TRIM.die[0]) / SOURCE_FPS;
+
+/**
+ * Stride frequency against corridor speed. Cadence grows far more slowly than
+ * speed does — a runner going twice as fast does not take twice as many steps,
+ * it takes longer ones — so tying the clip to speed 1:1 makes the legs scrabble
+ * without the runner looking any faster. The exponent keeps the feet looking
+ * planted from INITIAL_SPEED all the way to MAX_SPEED.
+ */
+const CADENCE_EXPONENT = 0.35;
+
+/** Cross-fades: long enough to blend, short enough not to eat a 0.5s action. */
+const FADE_RUN = 0.12;
+const FADE_ACTION = 0.06;
+
+/** How far the runner banks into a lane change, in radians at the midpoint. */
+const LEAN_RADIANS = 0.30;
+
+/** Squash on landing, and how long it takes to spring back. */
+const LAND_SQUASH = 0.14;
+const LAND_SECONDS = 0.22;
+
+// ── Impact ───────────────────────────────────────────────────────────────────
+/** Camera shake at the moment of contact, and how quickly it dies away. */
+const SHAKE_UNITS = 22;
+const SHAKE_SECONDS = 0.35;
+/** The camera closes in on the wreck over this long, so the last frame is read. */
+const SETTLE_SECONDS = 0.9;
 
 const GLB = (name: string) => `/assets/glb/${name}.glb`;
 
@@ -80,32 +109,139 @@ export interface Renderer3D {
    * loading. `lerp` is the fraction of a simulation step already owed but not
    * yet taken — the caller runs a fixed 60Hz step, so on a faster display this
    * is what keeps the corridor sliding instead of advancing in visible jerks.
+   *
+   * `events` are whatever the engine reported during the steps taken since the
+   * last frame. They are the only way effects get here: the engine says a coin
+   * was taken, this decides what that looks like.
    */
-  render(state: Readonly<GameState>, lerp?: number): void;
+  render(
+    state: Readonly<GameState>,
+    lerp?: number,
+    events?: readonly RunEvent[],
+    presentationPaused?: boolean,
+  ): void;
   resize(): void;
   dispose(): void;
 }
 
-/** A one-pixel-wide vertical gradient, which three stretches across the viewport. */
-function makeSkyGradient(): THREE.Texture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  const horizon = '#' + SKY.toString(16).padStart(6, '0');
-  grad.addColorStop(0, SKY_TOP);
-  // Flat from here down, and that is the whole trick. Fog resolves distant
-  // geometry to SKY, so anywhere a fogged roofline can appear the sky behind it
-  // has to be SKY too — otherwise the roof reads as a white hole punched in the
-  // sky. Only the strip above the nearest rooftops gets to be blue.
-  grad.addColorStop(0.28, horizon);
-  grad.addColorStop(1, horizon);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 1, 256);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
+// ── Sparks ───────────────────────────────────────────────────────────────────
+
+/** Colours, so a pickup, a landing and a crash are told apart at a glance. */
+const SPARK_COLOUR = {
+  coin:  new THREE.Color(0xffd23f),
+  crash: new THREE.Color(0xff4d3d),
+  dust:  new THREE.Color(0xbfae94),
+} as const;
+
+const SPARK_CAPACITY = 300;
+const SPARK_GRAVITY = -900;   // world units per second squared
+
+/**
+ * Short-lived world-space sparks, drawn as one additive point cloud.
+ *
+ * Held in absolute world-Z like every other object, so a burst stays where it
+ * happened while the corridor keeps sliding past it. Dead particles are
+ * swap-removed and the draw range trimmed, so an empty field costs one draw
+ * call of nothing rather than a buffer full of hidden points.
+ */
+class Sparks {
+  private readonly x = new Float32Array(SPARK_CAPACITY);
+  private readonly y = new Float32Array(SPARK_CAPACITY);
+  private readonly z = new Float32Array(SPARK_CAPACITY);   // absolute world-Z
+  private readonly vx = new Float32Array(SPARK_CAPACITY);
+  private readonly vy = new Float32Array(SPARK_CAPACITY);
+  private readonly vz = new Float32Array(SPARK_CAPACITY);
+  private readonly life = new Float32Array(SPARK_CAPACITY);
+  private readonly span = new Float32Array(SPARK_CAPACITY);
+  private readonly tint = Array.from({ length: SPARK_CAPACITY }, () => new THREE.Color());
+  private count = 0;
+
+  private readonly positions = new Float32Array(SPARK_CAPACITY * 3);
+  private readonly colours = new Float32Array(SPARK_CAPACITY * 3);
+  readonly points: THREE.Points;
+
+  constructor() {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(this.colours, 3));
+    geometry.setDrawRange(0, 0);
+    this.points = new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        size: 14,
+        sizeAttenuation: true,
+        vertexColors: true,
+        // Additive, so fading a spark is just fading its colour to black — one
+        // attribute instead of a per-point alpha the material cannot take.
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    this.points.frustumCulled = false;
+  }
+
+  /** Throw `count` sparks out of one point, in world coordinates. */
+  burst(
+    at: { x: number; y: number; worldZ: number },
+    count: number,
+    colour: THREE.Color,
+    speed: number,
+    seconds: number,
+  ): void {
+    for (let i = 0; i < count && this.count < SPARK_CAPACITY; i++) {
+      const n = this.count++;
+      const angle = Math.random() * Math.PI * 2;
+      const pitch = Math.random() * Math.PI * 0.5;
+      const v = speed * (0.5 + Math.random() * 0.5);
+      this.x[n] = at.x;
+      this.y[n] = at.y;
+      this.z[n] = at.worldZ;
+      this.vx[n] = Math.cos(angle) * Math.cos(pitch) * v;
+      this.vy[n] = Math.sin(pitch) * v;
+      this.vz[n] = Math.sin(angle) * Math.cos(pitch) * v;
+      this.span[n] = seconds * (0.6 + Math.random() * 0.6);
+      this.life[n] = this.span[n];
+      this.tint[n].copy(colour);
+    }
+  }
+
+  update(delta: number, cameraZ: number): void {
+    for (let i = this.count - 1; i >= 0; i--) {
+      this.life[i] -= delta;
+      if (this.life[i] <= 0) {
+        this.swapRemove(i);
+        continue;
+      }
+      this.vy[i] += SPARK_GRAVITY * delta;
+      this.x[i] += this.vx[i] * delta;
+      this.y[i] += this.vy[i] * delta;
+      this.z[i] += this.vz[i] * delta;
+      if (this.y[i] < 0) { this.y[i] = 0; this.vy[i] *= -0.35; }
+
+      const fade = this.life[i] / this.span[i];
+      this.positions[i * 3] = this.x[i];
+      this.positions[i * 3 + 1] = this.y[i];
+      this.positions[i * 3 + 2] = -(this.z[i] - cameraZ);
+      this.colours[i * 3] = this.tint[i].r * fade;
+      this.colours[i * 3 + 1] = this.tint[i].g * fade;
+      this.colours[i * 3 + 2] = this.tint[i].b * fade;
+    }
+
+    const geometry = this.points.geometry;
+    geometry.setDrawRange(0, this.count);
+    geometry.attributes.position.needsUpdate = true;
+    geometry.attributes.color.needsUpdate = true;
+  }
+
+  private swapRemove(i: number): void {
+    const last = --this.count;
+    if (i === last) return;
+    this.x[i] = this.x[last]; this.y[i] = this.y[last]; this.z[i] = this.z[last];
+    this.vx[i] = this.vx[last]; this.vy[i] = this.vy[last]; this.vz[i] = this.vz[last];
+    this.life[i] = this.life[last]; this.span[i] = this.span[last];
+    this.tint[i].copy(this.tint[last]);
+  }
 }
 
 /** Scale an object so its largest listed dimension matches the target. */
@@ -141,26 +277,6 @@ function anchored(obj: THREE.Object3D): THREE.Object3D {
   const wrapper = new THREE.Group();
   wrapper.add(obj);
   return wrapper;
-}
-
-function enableShadows(root: THREE.Object3D): void {
-  root.traverse(child => {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    const mat = mesh.material as THREE.MeshStandardMaterial;
-    // The source models ship with emissive set to their own albedo, which
-    // cancels all lighting. Clear it so the sun actually shapes them.
-    if (mat && 'emissive' in mat) {
-      mat.emissive = new THREE.Color(0x000000);
-      mat.emissiveMap = null;
-    }
-    if (mat && 'roughness' in mat) {
-      mat.roughness = 0.78;
-      mat.metalness = 0;
-    }
-  });
 }
 
 /** A reusable set of instances of one model, hidden until claimed each frame. */
@@ -199,81 +315,28 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
   const scene = new THREE.Scene();
-  scene.background = makeSkyGradient();
-  scene.fog = new THREE.Fog(SKY, FOG_NEAR, FOG_FAR);
 
   const camera = new THREE.PerspectiveCamera(CAM_FOV, 1, 10, 16000);
   scene.add(camera);
 
-  // ── Lighting ───────────────────────────────────────────────────────────────
-  // Bright hemisphere fill keeps the cartoon saturation; the sun does the
-  // shaping and casts the shadows. Anything flatter reads as unlit cardboard.
-  scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x9c8b73, 1.15));
-
-  const sun = new THREE.DirectionalLight(0xfff6e6, 2.1);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.near = 50;
-  sun.shadow.camera.far = 1800;
-  sun.shadow.camera.left = -520;
-  sun.shadow.camera.right = 520;
-  sun.shadow.camera.top = 520;
-  sun.shadow.camera.bottom = -520;
-  sun.shadow.bias = -0.0006;
-  sun.shadow.normalBias = 2;
-  scene.add(sun, sun.target);
-
-  // ── Ground: a long strip with a scrolling railway texture ──────────────────
-  const texLoader = new THREE.TextureLoader();
-  // Long enough to run from behind the camera to well past FOG_FAR, so the far
-  // edge of the strip is never anywhere the eye can reach.
-  const GROUND_LEN = 15000;
-
-  // Anisotropy matters more than usual here: the ground now runs for thousands
-  // of units, and at grazing angles the sleepers alias into a shimmering mess
-  // without it.
-  const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
-
-  const railTex = texLoader.load('/assets/png/railway_texture.png');
-  railTex.colorSpace = THREE.SRGBColorSpace;
-  railTex.wrapS = railTex.wrapT = THREE.RepeatWrapping;
-  railTex.anisotropy = maxAnisotropy;
-  railTex.repeat.set(3, GROUND_LEN / SLEEPER_SPACING);
-
-  const track = new THREE.Mesh(
-    new THREE.PlaneGeometry(TRACK_HALF_W * 2, GROUND_LEN),
-    new THREE.MeshStandardMaterial({ map: railTex, roughness: 0.9 })
-  );
-  track.rotation.x = -Math.PI / 2;
-  track.receiveShadow = true;
-  scene.add(track);
-
-  const stoneTex = texLoader.load('/assets/png/stone.png');
-  stoneTex.colorSpace = THREE.SRGBColorSpace;
-  stoneTex.wrapS = stoneTex.wrapT = THREE.RepeatWrapping;
-  stoneTex.anisotropy = maxAnisotropy;
-  stoneTex.repeat.set(24, GROUND_LEN / 140);
-
-  // Tinted down: at full brightness the cobbles out-shouted the track they are
-  // supposed to frame, and the lane the runner is in has to read first.
-  const apron = new THREE.Mesh(
-    new THREE.PlaneGeometry(2600, GROUND_LEN),
-    new THREE.MeshStandardMaterial({ map: stoneTex, color: 0x8e949c, roughness: 0.95 })
-  );
-  apron.rotation.x = -Math.PI / 2;
-  apron.position.y = -2;
-  apron.receiveShadow = true;
-  scene.add(apron);
+  const world = createWorld(scene, renderer);
+  const { sun } = world;
 
   // ── Loaded models ──────────────────────────────────────────────────────────
   const loader = new GLTFLoader();
-  const pools: Partial<Record<'train' | 'low' | 'bar' | 'coin' | 'gate', Pool>> = {};
-  const houses: { obj: THREE.Object3D; side: 1 | -1; slot: number }[] = [];
+  const pools: Partial<Record<'train' | 'low' | 'bar' | 'coin', Pool>> = {};
 
-  let runner: THREE.Object3D | null = null;
+  // The model carries its own facing rotation; the group is what the render
+  // loop leans and squashes, so those stay in world space and cannot fight it.
+  const runner = new THREE.Group();
+  scene.add(runner);
+  let runnerReady = false;
   let mixer: THREE.AnimationMixer | null = null;
   let clips: Record<string, THREE.AnimationAction> = {};
   let currentClip = '';
+
+  const sparks = new Sparks();
+  scene.add(sparks.points);
 
   const load = (name: string) =>
     loader.loadAsync(GLB(name)).then(gltf => {
@@ -302,11 +365,6 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     pools.bar = new Pool(() => anchored(model.clone(true)), scene);
   });
 
-  load('roadblock1').then(({ scene: model }) => {
-    fitTo(model, { x: TRACK_HALF_W * 2, y: WALL_HEIGHT * 0.9, z: 120 });
-    pools.gate = new Pool(() => anchored(model.clone(true)), scene);
-  });
-
   load('coin').then(({ scene: model }) => {
     fitTo(model, { x: 36, y: 36, z: 8 });
     // Coins are the one thing that should read as gold from any angle, and the
@@ -322,47 +380,24 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     pools.coin = new Pool(() => model.clone(true), scene);
   });
 
-  // Scenery: two rows of houses recycled along the track as the camera moves.
-  Promise.all(['house1', 'house2', 'house3', 'house4', 'house5'].map(load)).then(models => {
-    models.forEach(({ scene: model }, i) => {
-      // Height sets the scale, but the models vary wildly in footprint, so cap
-      // the width too — otherwise a wide one swallows the whole track.
-      fitTo(model, { y: HOUSE_HEIGHT });
-      const spread = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
-      if (spread.x > HOUSE_MAX_WIDTH) {
-        const k = HOUSE_MAX_WIDTH / spread.x;
-        model.scale.multiplyScalar(k);
-        spread.multiplyScalar(k);
-      }
-      // Stand each row just clear of the track edge, facing the runner.
-      const offsetX = TRACK_HALF_W + HOUSE_SETBACK + spread.x / 2;
-      for (const side of [1, -1] as const) {
-        for (let s = i; s < HOUSE_SLOTS; s += models.length) {
-          const obj = model.clone(true);
-          groundIt(obj);
-          obj.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
-          obj.position.x = side * offsetX;
-          scene.add(obj);
-          houses.push({ obj, side, slot: s });
-        }
-      }
-    });
-  });
-
-  // The runner, with the clip names the engine's four actions map onto.
+  // The runner, with the clip names the engine's actions map onto.
   load('player1').then(gltf => {
     const model = gltf.scene;
     fitTo(model, { y: PLAYER_WORLD_HEIGHT });
     groundIt(model);
     model.rotation.y = Math.PI;  // face away from the camera, down the track
-    runner = model;
-    scene.add(model);
+    runner.add(model);
+    runnerReady = true;
 
     mixer = new THREE.AnimationMixer(model);
     clips = {};
     for (const clip of gltf.animations) {
-      const action = mixer.clipAction(clip);
-      if (clip.name === 'jump' || clip.name === 'roll' || clip.name === 'die') {
+      const trim = CLIP_TRIM[clip.name];
+      const used = trim
+        ? THREE.AnimationUtils.subclip(clip, clip.name, trim[0], trim[1], SOURCE_FPS)
+        : clip;
+      const action = mixer.clipAction(used);
+      if (trim) {
         action.loop = THREE.LoopOnce;
         action.clampWhenFinished = true;
       }
@@ -371,10 +406,10 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   });
 
   /** Cross-fade the runner into the clip for an engine action. */
-  function playClip(name: string): void {
+  function playClip(name: string, fade: number): void {
     if (!clips[name] || currentClip === name) return;
-    if (currentClip && clips[currentClip]) clips[currentClip].fadeOut(0.12);
-    clips[name].reset().fadeIn(0.12).play();
+    if (currentClip && clips[currentClip]) clips[currentClip].fadeOut(fade);
+    clips[name].reset().fadeIn(fade).play();
     currentClip = name;
   }
 
@@ -383,6 +418,21 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     jumping: 'jump',
     sliding: 'roll',
   };
+
+  /**
+   * Hold an action's clip at the point the engine has actually reached.
+   *
+   * The alternative is to let the mixer run the clip on its own clock and hope
+   * the two agree. They do not have to: the simulation steps a fixed 60Hz and
+   * catches up after a stall, while the mixer advances by whatever wall-clock
+   * the last frame took. Driving the phase from `actionT` means take-off, apex
+   * and landing land on the frames the engine says they do, and the hitbox and
+   * the pose can never disagree about whether the runner is in the air.
+   */
+  function holdAtProgress(action: THREE.AnimationAction, progress: number): void {
+    action.paused = true;
+    action.time = clamp(progress, 0, 1) * action.getClip().duration;
+  }
 
   function resize(): void {
     const w = canvas.clientWidth || canvas.width;
@@ -400,10 +450,21 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   resize();
 
   let lastFrame = performance.now();
+  /** Seconds since contact, or null while the run is still going. */
+  let sinceImpact: number | null = null;
+  /** Seconds since the runner last touched down out of a jump. */
+  let sinceLanding = Infinity;
+  let wasAirborne = false;
+  const impactJolt = new THREE.Vector2();
 
-  function render(state: Readonly<GameState>, step = 0): void {
+  function render(
+    state: Readonly<GameState>,
+    step = 0,
+    events: readonly RunEvent[] = [],
+    presentationPaused = false,
+  ): void {
     const now = performance.now();
-    const delta = Math.min((now - lastFrame) / 1000, 0.1);
+    const delta = presentationPaused ? 0 : Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
 
     const { player } = state;
@@ -414,39 +475,100 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     // Lateral position: the engine already tracks the lane-change progress.
     const from = LANE_WORLD_X[player.lane];
     const to = LANE_WORLD_X[player.targetLane];
-    const px = lerp(from, to, smoothstep(Math.min(1, Math.max(0, player.laneT))));
+    const laneT = clamp(player.laneT + step / LANE_CHANGE_FRAMES, 0, 1);
+    const px = lerp(from, to, smoothstep(laneT));
+
+    // ── Effects the engine asked for ─────────────────────────────────────────
+    // The renderer outlives a run now, so the impact has to be let go of when
+    // the next one starts — a live run is by definition not in one. This has to
+    // come before the events below: the crash arrives on the same frame the
+    // status flips, and it is what starts the clock.
+    if (state.status === 'playing') sinceImpact = null;
+
+    for (const event of events) {
+      if (event.kind === 'coin') {
+        sparks.burst(
+          { x: LANE_WORLD_X[event.lane], y: 86, worldZ: event.worldZ },
+          12, SPARK_COLOUR.coin, 260, 0.5,
+        );
+      } else {
+        sinceImpact = 0;
+        sparks.burst(
+          { x: LANE_WORLD_X[event.lane], y: PLAYER_WORLD_HEIGHT * 0.55, worldZ: state.cameraZ + PLAYER_Z },
+          26, SPARK_COLOUR.crash, 420, 0.7,
+        );
+      }
+    }
+    if (sinceImpact !== null && state.status !== 'playing') sinceImpact += delta;
+
+    // A landing is the one beat the clips do not sell on their own: the trimmed
+    // jump ends the instant the feet are down, so the weight arriving is this.
+    const airborne = player.action === 'jumping';
+    if (wasAirborne && !airborne && state.status === 'playing') {
+      sinceLanding = 0;
+      sparks.burst({ x: px, y: 6, worldZ: cameraZ + PLAYER_Z }, 10, SPARK_COLOUR.dust, 150, 0.35);
+    }
+    wasAirborne = airborne;
+    sinceLanding += delta;
 
     // ── Runner ───────────────────────────────────────────────────────────────
-    if (runner) {
+    if (runnerReady) {
       runner.position.set(px, player.worldY, -PLAYER_Z);
-      playClip(state.status === 'gameover' ? 'die' : CLIP_FOR[player.action] ?? 'run');
+
+      const dying = state.status === 'gameover';
+      const clipName = dying ? 'die' : CLIP_FOR[player.action] ?? 'run';
+      playClip(clipName, clipName === 'run' ? FADE_RUN : FADE_ACTION);
+
+      const acting = clips[clipName];
+      if (acting) {
+        if (clipName === 'jump' || clipName === 'roll') {
+          holdAtProgress(acting, player.actionT + step / player.actionDuration);
+        } else if (clipName === 'run') {
+          acting.timeScale = (state.speed / INITIAL_SPEED) ** CADENCE_EXPONENT;
+        }
+      }
+
+      // Bank into a lane change, peaking halfway across and gone on arrival.
+      // Taken from the engine's own transition progress rather than from a
+      // frame-to-frame delta, so it does not vary with the display's refresh.
+      const laneDir = Math.sign(to - from);
+      runner.rotation.z = dying ? 0 : -laneDir * Math.sin(laneT * Math.PI) * LEAN_RADIANS;
+
+      const squash = Math.max(0, 1 - sinceLanding / LAND_SECONDS);
+      const spread = 1 + LAND_SQUASH * squash * 0.5;
+      runner.scale.set(spread, 1 - LAND_SQUASH * squash, spread);
     }
     mixer?.update(delta);
+    sparks.update(delta, cameraZ);
 
     // ── Camera and sun follow the runner ─────────────────────────────────────
+    // On impact the camera jolts once and then closes in on the wreck, so the
+    // crash is seen rather than cut away from. Both are bounded: a shake that
+    // outlasts the hit, or a push-in that keeps going, reads as a broken camera.
+    const settle = sinceImpact === null ? 0 : smoothstep(clamp(sinceImpact / SETTLE_SECONDS, 0, 1));
+    const shake = sinceImpact === null ? 0 : Math.max(0, 1 - sinceImpact / SHAKE_SECONDS) ** 2;
+    if (!presentationPaused) {
+      impactJolt.set(
+        (Math.random() - 0.5) * SHAKE_UNITS * shake,
+        (Math.random() - 0.5) * SHAKE_UNITS * shake,
+      );
+    }
     const camX = px * CAM_LATERAL_FOLLOW;
-    camera.position.set(camX, CAM_HEIGHT, -PLAYER_Z + CAM_BACK);
-    camera.lookAt(camX, CAM_LOOK_HEIGHT, -PLAYER_Z - CAM_LOOK_AHEAD);
-
+    camera.position.set(
+      camX + impactJolt.x,
+      lerp(CAM_HEIGHT, CAM_HEIGHT * 0.78, settle) + impactJolt.y,
+      -PLAYER_Z + lerp(CAM_BACK, CAM_BACK * 0.72, settle),
+    );
+    camera.lookAt(
+      camX,
+      lerp(CAM_LOOK_HEIGHT, PLAYER_WORLD_HEIGHT * 0.4, settle),
+      -PLAYER_Z - lerp(CAM_LOOK_AHEAD, 60, settle),
+    );
     sun.position.set(px + 400, 900, -PLAYER_Z + 500);
     sun.target.position.set(px, 0, -PLAYER_Z - 400);
     sun.target.updateMatrixWorld();
 
-    // ── Ground scroll ────────────────────────────────────────────────────────
-    // Keep the strip centred ahead of the camera and move the texture instead.
-    track.position.z = -PLAYER_Z - GROUND_LEN / 2 + 900;  // near edge just behind the camera
-    apron.position.z = track.position.z;
-    railTex.offset.y = -(cameraZ % SLEEPER_SPACING) / SLEEPER_SPACING;
-    stoneTex.offset.y = -(cameraZ % 140) / 140;
-
-    // ── Scenery recycling ────────────────────────────────────────────────────
-    // Each slot wraps once it passes the camera; the wrap happens beyond the
-    // fog, so it is never visible.
-    const span = HOUSE_SLOTS * HOUSE_SPACING;
-    for (const h of houses) {
-      const relZ = (((h.slot * HOUSE_SPACING - cameraZ) % span) + span) % span;
-      h.obj.position.z = -(relZ + HOUSE_NEAR);
-    }
+    world.update(cameraZ);
 
     // ── Obstacles ────────────────────────────────────────────────────────────
     for (const pool of Object.values(pools)) pool?.begin();
@@ -457,15 +579,9 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
       o.position.set(LANE_WORLD_X[lane], y, -relZ);
     };
 
-    for (const obs of state.obstacles as readonly Obstacle[]) {
+    for (const obs of state.obstacles) {
       const relZ = obs.worldZ - cameraZ;
       if (relZ < NEAR_Z - 400 || relZ > FAR_Z) continue;
-
-      if (obs.type === 'TURN_LEFT' || obs.type === 'TURN_RIGHT') {
-        const o = pools.gate?.claim();
-        if (o) o.position.set(0, 0, -relZ);
-        continue;
-      }
 
       const lanes: Lane[] = obs.lane === -1 ? [0, 1, 2] : [obs.lane];
       for (const lane of lanes) {
@@ -493,16 +609,9 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   }
 
   function dispose(): void {
-    scene.traverse(obj => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.geometry?.dispose();
-      const mat = mesh.material;
-      if (Array.isArray(mat)) mat.forEach(m => m.dispose());
-      else mat?.dispose();
-    });
-    railTex.dispose();
-    stoneTex.dispose();
+    world.dispose();
+    sparks.points.geometry.dispose();
+    (sparks.points.material as THREE.Material).dispose();
     renderer.dispose();
   }
 

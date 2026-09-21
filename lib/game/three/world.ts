@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LANE_WORLD_X, TRACK_HALF_W } from '../../constants';
+import { recycledRowZ, trackTravelOffset } from './motion';
 
 // ── Depth ────────────────────────────────────────────────────────────────────
 /** Horizon colour. Fog resolves to this, so distance fades into the skyline. */
@@ -34,29 +35,30 @@ const GROUND_LEN = 18000;
 // sunk below it.
 const RAIL_TOP = 0;
 const RAIL_H = 13;
-const RAIL_W = 8;
+const RAIL_W = 6;
 /** Distance between the two rails of one lane's track. */
 const RAIL_GAUGE = 64;
-const SLEEPER_W = 96;
-const SLEEPER_H = 11;
-const SLEEPER_D = 28;
-const SLEEPER_SPACING = 66;
+const SLEEPER_W = 70;
+const SLEEPER_H = 9;
+const SLEEPER_D = 20;
+const SLEEPER_SPACING = 62;
 const BALLAST_Y = RAIL_TOP - RAIL_H - SLEEPER_H;
 /** Ballast runs a little wider than the lanes so the track has a shoulder. */
 const BALLAST_HALF_W = TRACK_HALF_W + 46;
 
 // ── Sides ────────────────────────────────────────────────────────────────────
-const KERB_H = 62;
-const LAMP_SPACING = 430;
+const KERB_H = 42;
+const LAMP_SPACING = 700;
 const LAMP_SLOTS = 11;
 const LAMP_HEIGHT = 250;
 /** Gap between the ballast shoulder and the near face of a house row. */
-const HOUSE_SETBACK = 300;
+const HOUSE_SETBACK = 390;
 const HOUSE_SPACING = 700;
 const HOUSE_SLOTS = 10;
-const HOUSE_HEIGHT = 470;
-const HOUSE_MAX_WIDTH = 460;
+const HOUSE_HEIGHT = 360;
+const HOUSE_MAX_WIDTH = 360;
 const HOUSE_NEAR = 220;
+const TEXTURE_TILE = 180;
 
 const GLB = (name: string) => `/assets/glb/${name}.glb`;
 
@@ -118,6 +120,37 @@ function makeSky(): THREE.Mesh {
   );
 }
 
+/** A small, deterministic texture keeps the ground quiet and avoids asset noise. */
+function makeGroundTexture(base: string, fleck: string, density: number): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+
+  let seed = 0x51f15e;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+  for (let i = 0; i < density; i++) {
+    const tone = 0.25 + random() * 0.35;
+    ctx.globalAlpha = tone;
+    ctx.fillStyle = fleck;
+    const r = 0.7 + random() * 1.5;
+    ctx.beginPath();
+    ctx.ellipse(random() * size, random() * size, r, r * (0.55 + random() * 0.5), random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  return texture;
+}
+
 /** Scale an object so its largest listed dimension matches the target. */
 function fitTo(obj: THREE.Object3D, target: { x?: number; y?: number; z?: number }): void {
   const size = new THREE.Box3().setFromObject(obj).getSize(new THREE.Vector3());
@@ -166,17 +199,17 @@ function makeLamp(): THREE.Object3D {
   pole.position.y = LAMP_HEIGHT / 2;
   pole.castShadow = true;
 
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(56, 6, 6), metal);
-  arm.position.set(-26, LAMP_HEIGHT - 6, 0);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(42, 5, 5), metal);
+  arm.position.set(-18, LAMP_HEIGHT - 6, 0);
   arm.castShadow = true;
 
   const head = new THREE.Mesh(
-    new THREE.BoxGeometry(34, 12, 20),
+    new THREE.BoxGeometry(24, 10, 14),
     new THREE.MeshStandardMaterial({
-      color: 0xfff1cc, emissive: 0xffd27a, emissiveIntensity: 1.6, roughness: 0.4,
+      color: 0xe6aa55, emissive: 0xc97824, emissiveIntensity: 0.55, roughness: 0.48,
     })
   );
-  head.position.set(-50, LAMP_HEIGHT - 12, 0);
+  head.position.set(-36, LAMP_HEIGHT - 12, 0);
 
   lamp.add(pole, arm, head);
   return lamp;
@@ -191,9 +224,9 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   // ── Lighting ───────────────────────────────────────────────────────────────
   // Bright hemisphere fill keeps the cartoon saturation; the sun does the
   // shaping and casts the shadows. Anything flatter reads as unlit cardboard.
-  scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x6b6357, 1.05));
+  scene.add(new THREE.HemisphereLight(0xd9edff, 0x7b796b, 1.2));
 
-  const sun = new THREE.DirectionalLight(0xfff3dc, 2.6);
+  const sun = new THREE.DirectionalLight(0xfff4df, 2.05);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.near = 50;
@@ -212,37 +245,29 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   const track = new THREE.Group();     // scrolls with the camera, modulo one sleeper
   scene.add(track);
 
-  const texLoader = new THREE.TextureLoader();
   const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
 
-  const repeatTex = (url: string, rx: number, ry: number) => {
-    const t = texLoader.load(url);
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.anisotropy = maxAnisotropy;
-    t.repeat.set(rx, ry);
-    disposables.push(t);
-    return t;
-  };
-
   // ── Ballast and verge ──────────────────────────────────────────────────────
-  // Both are gravel, and both are tinted well down. At full brightness the
-  // stone out-shouted the track it is supposed to frame, and the lane the
-  // runner is in has to read first.
-  const ballastTex = repeatTex('/assets/png/stone.png', 6, GROUND_LEN / 190);
+  const ballastTex = makeGroundTexture('#7d8387', '#c1c5c5', 1250);
+  ballastTex.anisotropy = maxAnisotropy;
+  ballastTex.repeat.set(BALLAST_HALF_W * 2 / TEXTURE_TILE, GROUND_LEN / TEXTURE_TILE);
+  disposables.push(ballastTex);
   const ballast = new THREE.Mesh(
     new THREE.PlaneGeometry(BALLAST_HALF_W * 2, GROUND_LEN),
-    new THREE.MeshStandardMaterial({ map: ballastTex, color: 0x6e6a63, roughness: 1 })
+    new THREE.MeshStandardMaterial({ map: ballastTex, color: 0xb7bdc0, roughness: 1 })
   );
   ballast.rotation.x = -Math.PI / 2;
   ballast.position.y = BALLAST_Y;
   ballast.receiveShadow = true;
   scene.add(ballast);
 
-  const vergeTex = repeatTex('/assets/png/stone.png', 26, GROUND_LEN / 150);
+  const vergeTex = makeGroundTexture('#708166', '#a5b092', 700);
+  vergeTex.anisotropy = maxAnisotropy;
+  vergeTex.repeat.set(3200 / TEXTURE_TILE, GROUND_LEN / TEXTURE_TILE);
+  disposables.push(vergeTex);
   const verge = new THREE.Mesh(
     new THREE.PlaneGeometry(3200, GROUND_LEN),
-    new THREE.MeshStandardMaterial({ map: vergeTex, color: 0x8a8477, roughness: 1 })
+    new THREE.MeshStandardMaterial({ map: vergeTex, color: 0x9eaa91, roughness: 1 })
   );
   verge.rotation.x = -Math.PI / 2;
   verge.position.y = BALLAST_Y - 26;
@@ -251,7 +276,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
 
   // ── Rails ──────────────────────────────────────────────────────────────────
   // Uniform along Z, so unlike the sleepers they never need recycling.
-  const railMat = new THREE.MeshStandardMaterial({ color: 0x8a9099, roughness: 0.32, metalness: 0.9 });
+  const railMat = new THREE.MeshStandardMaterial({ color: 0xb4bac1, roughness: 0.38, metalness: 0.82 });
   const railGeo = new THREE.BoxGeometry(RAIL_W, RAIL_H, GROUND_LEN);
   for (const laneX of LANE_WORLD_X) {
     for (const side of [-1, 1]) {
@@ -269,7 +294,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   const sleeperCount = Math.ceil(GROUND_LEN / SLEEPER_SPACING);
   const sleepers = new THREE.InstancedMesh(
     new THREE.BoxGeometry(SLEEPER_W, SLEEPER_H, SLEEPER_D),
-    new THREE.MeshStandardMaterial({ color: 0x5c4a39, roughness: 0.95 }),
+    new THREE.MeshStandardMaterial({ color: 0x665444, roughness: 0.96 }),
     sleeperCount * LANE_WORLD_X.length
   );
   sleepers.castShadow = true;
@@ -285,7 +310,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
         m.makeTranslation(laneX, RAIL_TOP - RAIL_H - SLEEPER_H / 2, z);
         sleepers.setMatrixAt(i, m);
         // A little grain, so a hundred identical timbers do not read as a comb.
-        const k = 0.78 + Math.random() * 0.34;
+        const k = 0.88 + Math.random() * 0.18;
         sleepers.setColorAt(i, colour.setRGB(k, k * 0.96, k * 0.9));
         i++;
       }
@@ -293,9 +318,19 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   }
   track.add(sleepers);
 
+  // Light maintenance walks give the railway a clean edge against the verge.
+  const walkMat = new THREE.MeshStandardMaterial({ color: 0xbec1b9, roughness: 0.94 });
+  for (const side of [-1, 1]) {
+    const walk = new THREE.Mesh(new THREE.PlaneGeometry(82, GROUND_LEN), walkMat);
+    walk.rotation.x = -Math.PI / 2;
+    walk.position.set(side * (BALLAST_HALF_W + 58), BALLAST_Y - 18, 0);
+    walk.receiveShadow = true;
+    scene.add(walk);
+  }
+
   // ── Kerbs: a hard edge where the track stops ───────────────────────────────
-  const kerbMat = new THREE.MeshStandardMaterial({ color: 0x9a978f, roughness: 0.9 });
-  const kerbGeo = new THREE.BoxGeometry(30, KERB_H, GROUND_LEN);
+  const kerbMat = new THREE.MeshStandardMaterial({ color: 0xc8cbc4, roughness: 0.92 });
+  const kerbGeo = new THREE.BoxGeometry(20, KERB_H, GROUND_LEN);
   for (const side of [-1, 1]) {
     const kerb = new THREE.Mesh(kerbGeo, kerbMat);
     kerb.position.set(side * (BALLAST_HALF_W + 15), BALLAST_Y - 26 + KERB_H / 2, 0);
@@ -323,7 +358,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   }
 
   const loader = new GLTFLoader();
-  Promise.all(['house1', 'house2', 'house3', 'house4', 'house5'].map(n =>
+  Promise.all(['house1', 'house2'].map(n =>
     loader.loadAsync(GLB(n)).then(g => { enableShadows(g.scene); return g; })
   )).then(models => {
     models.forEach(({ scene: model }, i) => {
@@ -336,20 +371,26 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
         model.scale.multiplyScalar(k);
         spread.multiplyScalar(k);
       }
-      const offsetX = BALLAST_HALF_W + HOUSE_SETBACK + spread.x / 2;
       for (const side of [1, -1] as const) {
         for (let s = i; s < HOUSE_SLOTS; s += models.length) {
           const obj = model.clone(true);
+          obj.rotation.y = side === 1 ? -Math.PI / 2 : Math.PI / 2;
+          obj.scale.multiplyScalar(0.94 + ((s + i) % 3) * 0.03);
+          // Measure after orientation and scale: model-local width is not the
+          // street-facing width once the house has turned toward the track.
+          const bounds = new THREE.Box3().setFromObject(obj);
+          const width = bounds.getSize(new THREE.Vector3()).x;
           groundIt(obj);
-          // Jitter each copy. Five models over ten slots per side is otherwise
-          // a visible loop; a few degrees of yaw and a few percent of scale is
-          // enough to break it without anything looking crooked.
-          obj.rotation.y = (side === 1 ? -Math.PI / 2 : Math.PI / 2) + (Math.random() - 0.5) * 0.22;
-          obj.scale.multiplyScalar(0.88 + Math.random() * 0.24);
-          obj.position.x = side * (offsetX + Math.random() * 90);
-          obj.position.y = BALLAST_Y - 26;
+          obj.position.x = side * (BALLAST_HALF_W + HOUSE_SETBACK + width / 2);
+          obj.position.y += BALLAST_Y - 26;
           scene.add(obj);
-          rows.push({ obj, slot: s, spacing: HOUSE_SPACING, slots: HOUSE_SLOTS, near: HOUSE_NEAR });
+          rows.push({
+            obj,
+            slot: s + (side === 1 ? 0 : 0.5),
+            spacing: HOUSE_SPACING,
+            slots: HOUSE_SLOTS,
+            near: HOUSE_NEAR,
+          });
         }
       }
     });
@@ -357,13 +398,15 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
 
   function update(cameraZ: number): void {
     // Sleepers: shift the whole row by the remainder, never further than one gap.
-    track.position.z = -(cameraZ % SLEEPER_SPACING);
+    track.position.z = trackTravelOffset(cameraZ, SLEEPER_SPACING);
+    // Plane local +V points toward world -Z after rotation. Increasing the
+    // offset therefore moves the visible grain toward +Z with the scenery.
+    ballastTex.offset.y = cameraZ / TEXTURE_TILE;
+    vergeTex.offset.y = cameraZ / TEXTURE_TILE;
 
     // Everything else wraps slot by slot, always beyond the fog.
     for (const r of rows) {
-      const span = r.slots * r.spacing;
-      const relZ = (((r.slot * r.spacing - cameraZ) % span) + span) % span;
-      r.obj.position.z = -(relZ + r.near);
+      r.obj.position.z = recycledRowZ(cameraZ, r.slot, r.spacing, r.slots, r.near);
     }
   }
 

@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 
 const REQUIRED: readonly (keyof Sensors)[] = [
   'stance', 'threatIn', 'ifItDoesNothing', 'ifItStepsLeft', 'ifItStepsRight',
-  'ifItJumps', 'ifItSlides', 'turnGate',
+  'ifItJumps', 'ifItSlides',
 ];
 
 export async function POST(request: Request) {

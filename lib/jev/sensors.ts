@@ -8,8 +8,8 @@
 // one out.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { collisionExitZ, turnArmsAtDepth } from '../constants';
-import type { GameState, Lane, Obstacle, ObstacleType, SolidObstacleType } from '../../types/game';
+import { collisionExitZ } from '../constants';
+import type { GameState, Lane, Obstacle, ObstacleType } from '../../types/game';
 import type { Sensors } from './contract';
 import {
   DECISION_HORIZON_FRAMES, canStillJump, canStillSlide,
@@ -43,13 +43,12 @@ export interface Reading {
 
 /** Read one frame of game state as a decision payload. */
 export function readSensors(state: GameState): Reading {
-  const { player, cameraZ, speed } = state;
+  const { player, speed } = state;
 
   // The lane the runner is committed to — mid-step, that is where it is headed,
   // which is what matters for anything far enough away to decide about.
   const lane = player.targetLane;
   const wave = nextWave(state);
-  const turn = readTurnGate(state);
   const coinLane = nextCoinLane(state);
 
   const frames = wave ? wave.frames : Infinity;
@@ -67,21 +66,17 @@ export function readSensors(state: GameState): Reading {
       ? holdingLane(lane, wave.byLane[lane], coinLane)
       : 'it keeps running down an empty corridor',
 
-    ifItStepsLeft: describeStep(state, 'left', wave, turn, coinLane, canStep),
-    ifItStepsRight: describeStep(state, 'right', wave, turn, coinLane, canStep),
+    ifItStepsLeft: describeStep(state, 'left', wave, coinLane, canStep),
+    ifItStepsRight: describeStep(state, 'right', wave, coinLane, canStep),
 
     ifItJumps: describeJump(wave?.byLane[lane] ?? null, wave, airborne, frames, speed),
     ifItSlides: describeSlide(wave?.byLane[lane] ?? null, wave, airborne, frames, speed),
-
-    turnGate: turn
-      ? `a ${turn.direction.toUpperCase()} turn is ordered and must be taken within ${describeDelay(turn.frames)}, or the run ends`
-      : 'none pending',
   };
 
   return {
     sensors,
     threat: wave ? { key: wave.key, worldZ: wave.worldZ, frames: wave.frames } : null,
-    worthAsking: wave !== null || turn !== null,
+    worthAsking: wave !== null,
   };
 }
 
@@ -95,18 +90,12 @@ interface Wave {
   byLane: Record<Lane, ObstacleType | null>;
 }
 
-/** A gate is not something the runner can be hit by, so it is not part of a wave. */
-function isSolid(obs: Obstacle): obs is Obstacle & { type: SolidObstacleType } {
-  return obs.type !== 'TURN_LEFT' && obs.type !== 'TURN_RIGHT';
-}
-
 function nextWave(state: GameState): Wave | null {
   const { cameraZ, speed } = state;
 
-  let leader: (Obstacle & { type: SolidObstacleType }) | null = null;
+  let leader: Obstacle | null = null;
   for (const obs of state.obstacles) {
     if (obs.passed) continue;
-    if (!isSolid(obs)) continue;
     // The engine keeps testing an obstacle until its back edge has cleared the
     // runner, so one sitting alongside is still live: stepping into its lane
     // right now is still fatal, and an earlier version of this dropped it at
@@ -117,7 +106,7 @@ function nextWave(state: GameState): Wave | null {
     // the runner's problem yet, and describing it as if it were is worse than
     // saying nothing: every consequence line then answers a wave seconds away
     // instead of the corridor in front, so a lane that is clear right now reads
-    // as blocked and a turn gate asking for it gets refused.
+    // as blocked.
     if (framesToImpact(obs.worldZ, cameraZ, speed, obs.type) > DECISION_HORIZON_FRAMES) continue;
     if (!leader || obs.worldZ < leader.worldZ) leader = obs;
   }
@@ -128,7 +117,6 @@ function nextWave(state: GameState): Wave | null {
 
   for (const obs of state.obstacles) {
     if (obs.passed) continue;
-    if (!isSolid(obs)) continue;
     if (Math.abs(obs.worldZ - leader.worldZ) > CLUSTER_SPREAD) continue;
     if (obs.id < key) key = obs.id;
 
@@ -146,22 +134,6 @@ function nextWave(state: GameState): Wave | null {
     frames: framesToImpact(leader.worldZ, cameraZ, speed, leader.type),
     byLane,
   };
-}
-
-// ── The pending turn gate ────────────────────────────────────────────────────
-
-function readTurnGate(state: GameState): { direction: 'left' | 'right'; frames: number } | null {
-  const tw = state.turnWarning;
-  if (!tw || tw.completed) return null;
-
-  // A gate that has not armed yet cannot be answered — pressing its direction
-  // early does nothing at all. Reporting one anyway invites the runner to spend
-  // every decision on a turn that is still seconds away while a wall closes in,
-  // which is exactly how the first version of this died. Once armed there are
-  // TURN_WARNING_FRAMES to answer, which is time enough.
-  if (tw.worldZ - state.cameraZ >= turnArmsAtDepth(state.speed)) return null;
-
-  return { direction: tw.direction, frames: tw.timer };
 }
 
 // ── Coins ────────────────────────────────────────────────────────────────────
@@ -217,37 +189,28 @@ function describeStep(
   state: GameState,
   direction: 'left' | 'right',
   wave: Wave | null,
-  turn: { direction: 'left' | 'right'; frames: number } | null,
   coinLane: Lane | null,
   canStep: boolean,
 ): string {
   const lane = state.player.targetLane;
-  const takesTurn = turn?.direction === direction;
-  const atEdge = direction === 'left' ? lane === 0 : lane === 2;
 
-  // Pressing a direction satisfies the gate whether or not the runner can
-  // actually move that way, so the edge case is worth stating plainly.
-  if (atEdge) {
-    return takesTurn
-      ? `it takes the ordered ${direction.toUpperCase()} turn; it is already in the ${LANE_NAMES[lane]} lane so it does not move, and whatever is in that lane still applies`
-      : `not possible — it is already in the ${LANE_NAMES[lane]} lane`;
+  if (direction === 'left' ? lane === 0 : lane === 2) {
+    return `not possible — it is already in the ${LANE_NAMES[lane]} lane`;
   }
 
   const dest = (direction === 'left' ? lane - 1 : lane + 1) as Lane;
-  const prefix = takesTurn ? `it takes the ordered ${direction.toUpperCase()} turn and steps` : 'it steps';
-
   const type = wave?.byLane[dest] ?? null;
 
   if (wave && !canStep) {
     return type
-      ? `${prefix} into the ${LANE_NAMES[dest]} lane and is caught there by ${obstaclePhrase(type)}`
-      : `${prefix} toward the ${LANE_NAMES[dest]} lane, but the step cannot finish before impact — whatever is in the ${LANE_NAMES[lane]} lane still hits it`;
+      ? `it steps into the ${LANE_NAMES[dest]} lane and is caught there by ${obstaclePhrase(type)}`
+      : `it steps toward the ${LANE_NAMES[dest]} lane, but the step cannot finish before impact — whatever is in the ${LANE_NAMES[lane]} lane still hits it`;
   }
 
   if (!type) {
-    return withCoins(`${prefix} into the ${LANE_NAMES[dest]} lane, which is clear`, dest, coinLane);
+    return withCoins(`it steps into the ${LANE_NAMES[dest]} lane, which is clear`, dest, coinLane);
   }
-  return `${prefix} into the ${LANE_NAMES[dest]} lane, where it meets ${obstaclePhrase(type)}`;
+  return `it steps into the ${LANE_NAMES[dest]} lane, where it meets ${obstaclePhrase(type)}`;
 }
 
 function describeJump(

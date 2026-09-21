@@ -14,25 +14,22 @@ import dynamic from 'next/dynamic';
 import HUD from '@/components/game/HUD';
 import JevPanel from '@/components/jev/JevPanel';
 import { useJevDriver } from '@/hooks/useJevDriver';
+import type { LiveState } from '@/components/game/GameCanvas';
 import type { Difficulty } from '@/types/game';
 
 const GameCanvas = dynamic(() => import('@/components/game/GameCanvas'), { ssr: false });
 
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 
-/** How long the result card stays up before the next run starts. */
-const RESTART_DELAY_MS = 3200;
+/**
+ * How long the result card stays up before the next run starts. The crash it
+ * reports has already had its own second on screen before this begins.
+ */
+const RESTART_DELAY_MS = 2600;
 
 interface RunResult { score: number; distance: number; coins: number; }
 
-interface LiveState {
-  score: number; distance: number; coins: number;
-  multiplier: number; speed: number;
-}
-
-const INITIAL_LIVE: LiveState = {
-  score: 0, distance: 0, coins: 0, multiplier: 1, speed: 8,
-};
+const INITIAL_LIVE: LiveState = { score: 0, distance: 0, coins: 0, speed: 8 };
 
 export default function JevScene() {
   // Easy by default, and not for the reason it looks like. Medium spaces its
@@ -92,7 +89,7 @@ export default function JevScene() {
 
         <div className="relative min-h-0 flex-1">
           <GameCanvas
-            key={runKey}
+            runId={runKey}
             difficulty={difficulty}
             /* Jev's runs never touch the human leaderboard. */
             highScore={0}
@@ -109,7 +106,6 @@ export default function JevScene() {
             distance={Math.floor(live.distance)}
             coins={live.coins}
             highScore={best}
-            multiplier={live.multiplier}
             speed={live.speed}
           />
 

@@ -13,7 +13,7 @@
 import { initGameState, updateGame } from '../lib/game/engine';
 import { PLAYER_Z } from '../lib/constants';
 import { TIMED_AGAINST, framesToImpact, jumpLead, slideLead } from '../lib/jev/timing';
-import type { GameState, InputState, Lane, SolidObstacleType } from '../types/game';
+import type { GameState, InputState, Lane, ObstacleType } from '../types/game';
 
 const NO_INPUT: InputState = { left: false, right: false, up: false, down: false, pause: false };
 
@@ -23,12 +23,11 @@ function corridor(): GameState {
   state.status = 'playing';
   state.nextObstacleZ = Infinity;
   state.nextCoinZ = Infinity;
-  state.nextTurnZ = Infinity;
   return state;
 }
 
 /** Put one obstacle `ahead` units in front of the runner, in `lane`. */
-function place(state: GameState, type: SolidObstacleType, lane: Lane, ahead: number): void {
+function place(state: GameState, type: ObstacleType, lane: Lane, ahead: number): void {
   state.obstacles.push({
     id: 1, type, lane, worldZ: state.cameraZ + PLAYER_Z + ahead, passed: false,
   });

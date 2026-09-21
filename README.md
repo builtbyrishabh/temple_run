@@ -77,9 +77,7 @@ up one-to-one with the five options of the question:
   "ifItStepsLeft":   "it steps into the left lane, where it meets a solid wall that cannot be jumped or slid under",
   "ifItStepsRight":  "it steps into the right lane, which is clear",
   "ifItJumps":       "it clears the low wall cleanly",
-  "ifItSlides":      "it slides straight into the low wall",
-  "turnGate":        "none pending",
-  "livesLeft":       3
+  "ifItSlides":      "it slides straight into the low wall"
 }
 ```
 
@@ -92,7 +90,7 @@ The shape follows from Jev's documented failure modes:
 - **Nothing it cannot act on.** Feasibility is folded in: when a step can no
   longer finish in time, the field says so rather than describing a lane the
   runner cannot reach.
-- **Small.** Nine fields. Large states with irrelevant detail measurably degrade
+- **Small.** Seven fields. Large states with irrelevant detail measurably degrade
   Jev's answers.
 
 Two questions per snapshot, in one request:
@@ -309,10 +307,10 @@ output tokens are free.
 
 ## The game itself
 
-A pseudo-3D endless runner on an HTML5 canvas — no engine, no assets, just math.
-Three lanes; `WALL` needs a lane change, `LOW_WALL` a jump, `HIGH_BAR` a slide,
-and turn gates need the right direction pressed in time. Coins, combo
-multiplier, three lives, and a speed ramp from 8 to 30 units/frame.
+A three-lane endless runner drawn with three.js. `WALL` — a train — needs a lane
+change, `LOW_WALL` a jump, `HIGH_BAR` a slide, and one contact ends the run.
+Coins, and a speed ramp from 8 to 30 units/frame that tightens the gap between
+waves as it goes.
 
 Human controls at `/`: `←→` lanes, `↑`/space jump, `↓` slide, `P` pause.
 

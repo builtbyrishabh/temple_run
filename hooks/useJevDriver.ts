@@ -45,7 +45,7 @@ const IDLE: JevStatus = {
 /** An action Jev has chosen, and the wave it was chosen about. */
 interface Commitment {
   action: RunnerAction;
-  /** Null for a turn-gate answer, which is not timed against an obstacle. */
+  /** Null when the decision was not about a specific wave. */
   worldZ: number | null;
 }
 
@@ -71,8 +71,8 @@ export function useJevDriver(active: boolean): { driver: GameDriver; status: Jev
     const state = stateRef.current;
     if (!commitment || !state || commitment.action === 'none') return {};
 
-    // A sideways step is also how a turn gate is answered, and both want to
-    // happen as early as possible — there is nothing to time.
+    // A sideways step wants to happen as early as it can land — there is
+    // nothing to time it against.
     if (commitment.action === 'left' || commitment.action === 'right') {
       if (cooldownRef.current > 0) return {};
       commitmentRef.current = null;
