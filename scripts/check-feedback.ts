@@ -1,6 +1,10 @@
 import { collisionEntryZ, PLAYER_Z } from '../lib/constants';
 import { initGameState, updateGame } from '../lib/game/engine';
-import { TURN_SIGN_Z } from '../lib/game/renderer3d';
+import {
+  DEATH_SECONDS,
+  deathAnimationComplete,
+  TURN_SIGN_Z,
+} from '../lib/game/renderer3d';
 import type { InputState } from '../types/game';
 
 const NO_INPUT: InputState = {
@@ -19,6 +23,22 @@ function check(what: string, ok: boolean): void {
 console.log('\nrenderer feedback events');
 
 check('the turn arrow sits on the camera-facing side of its gate', TURN_SIGN_Z > 0);
+check(
+  'results wait while the runner model is still loading',
+  !deathAnimationComplete(false, false, DEATH_SECONDS * 2),
+);
+check(
+  'a failed runner load does not trap the run forever',
+  deathAnimationComplete(false, true, 0),
+);
+check(
+  'results wait for the actual death clip once the runner is ready',
+  !deathAnimationComplete(true, false, DEATH_SECONDS - 0.01),
+);
+check(
+  'results may open when the loaded death clip finishes',
+  deathAnimationComplete(true, false, DEATH_SECONDS),
+);
 
 {
   const state = initGameState('medium', 0);

@@ -7,7 +7,7 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import { useGameLoop }   from '@/hooks/useGameLoop';
 import { useInput }      from '@/hooks/useInput';
 import { initGameState, updateGame } from '@/lib/game/engine';
-import { createRenderer3D, DEATH_SECONDS, type Renderer3D } from '@/lib/game/renderer3d';
+import { createRenderer3D, type Renderer3D } from '@/lib/game/renderer3d';
 import { initAudio, startMusic, stopMusic, playSfx, setMusicVolume, setSfxVolume } from '@/lib/game/audio';
 import type { GameState, Difficulty, GameDriver, InputState, RunEvent } from '@/types/game';
 
@@ -23,8 +23,6 @@ const STEP_MS = 1000 / 60;
 
 /** Most simulation one animation frame may catch up on, so a stall is not repaid all at once. */
 const MAX_CATCHUP_MS = 100;
-const DEATH_HOLD_MS = DEATH_SECONDS * 1000;
-
 interface LiveState {
   score: number; distance: number; coins: number;
   multiplier: number; speed: number;
@@ -47,7 +45,7 @@ export default function GameCanvas({
   runId, difficulty, highScore, onGameOver, onPause, isPaused, soundOn, onLiveState, driver,
 }: Props) {
   const hudTimer = useRef(0);
-  const deathHoldRef = useRef<number | null>(null);
+  const stoppedForCrashRef = useRef(false);
   const reportedRef = useRef(false);
   /** Simulation time owed but not yet stepped, in ms. Doubles as the render lerp. */
   const carryRef = useRef(0);
@@ -83,7 +81,7 @@ export default function GameCanvas({
   useEffect(() => {
     stateRef.current = initGameState(difficulty, highScore);
     stateRef.current.status = 'playing';
-    deathHoldRef.current = null;
+    stoppedForCrashRef.current = false;
     reportedRef.current = false;
     carryRef.current = 0;
     setStarted(true);
@@ -172,23 +170,21 @@ export default function GameCanvas({
       carryRef.current = 0;
     }
 
-    // Leave the terminal state visible until the trimmed death clip completes.
+    const frame = r3d.render(state, carryRef.current / STEP_MS, events);
+
+    // Leave the terminal state visible until the renderer finishes the death clip.
     if (state.status === 'gameover') {
-      if (deathHoldRef.current === null) {
-        deathHoldRef.current = 0;
+      if (!stoppedForCrashRef.current) {
+        stoppedForCrashRef.current = true;
         stopMusic();
-      } else {
-        deathHoldRef.current += dt;
       }
 
-      if (!reportedRef.current && deathHoldRef.current >= DEATH_HOLD_MS) {
+      if (!reportedRef.current && frame.deathFinished) {
         reportedRef.current = true;
         if (soundOn) playSfx('gameover');
         onGameOver(Math.floor(state.score), Math.floor(state.distance), state.coins);
       }
     }
-
-    r3d.render(state, carryRef.current / STEP_MS, events);
   }, [consumeInput, isPaused, onGameOver, onPause, soundOn, step]);
 
   useGameLoop(tick, started);

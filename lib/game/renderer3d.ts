@@ -84,6 +84,15 @@ export const CLIP_TRIM: Record<string, readonly [number, number]> = {
 /** The result overlay waits exactly long enough for the fatal reaction. */
 export const DEATH_SECONDS = (CLIP_TRIM.die[1] - CLIP_TRIM.die[0]) / SOURCE_FPS;
 
+/** Results wait for a loaded death clip, but a failed asset must not deadlock the run. */
+export function deathAnimationComplete(
+  runnerReady: boolean,
+  runnerLoadFailed: boolean,
+  elapsed: number,
+): boolean {
+  return runnerLoadFailed || (runnerReady && elapsed >= DEATH_SECONDS);
+}
+
 const CADENCE_EXPONENT = 0.35;
 const FADE_RUN = 0.12;
 const FADE_ACTION = 0.06;
@@ -106,9 +115,13 @@ export interface Renderer3D {
    * yet taken — the caller runs a fixed 60Hz step, so on a faster display this
    * is what keeps the corridor sliding instead of advancing in visible jerks.
    */
-  render(state: Readonly<GameState>, lerp?: number, events?: readonly RunEvent[]): void;
+  render(state: Readonly<GameState>, lerp?: number, events?: readonly RunEvent[]): RendererFrame;
   resize(): void;
   dispose(): void;
+}
+
+export interface RendererFrame {
+  deathFinished: boolean;
 }
 
 const SPARK_COLOUR = {
@@ -414,6 +427,7 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   const runner = new THREE.Group();
   scene.add(runner);
   let runnerReady = false;
+  let runnerLoadFailed = false;
   let mixer: THREE.AnimationMixer | null = null;
   let clips: Record<string, THREE.AnimationAction> = {};
   let currentClip = '';
@@ -553,6 +567,8 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
       }
       clips[clip.name] = action;
     }
+  }).catch(() => {
+    runnerLoadFailed = true;
   });
 
   /** Cross-fade the runner into the clip for an engine action. */
@@ -593,8 +609,14 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   let sinceImpact: number | null = null;
   let sinceLanding = Infinity;
   let wasAirborne = false;
+  let deathElapsed: number | null = null;
+  let previousStatus: GameState['status'] | null = null;
 
-  function render(state: Readonly<GameState>, step = 0, events: readonly RunEvent[] = []): void {
+  function render(
+    state: Readonly<GameState>,
+    step = 0,
+    events: readonly RunEvent[] = [],
+  ): RendererFrame {
     const now = performance.now();
     const delta = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
@@ -609,6 +631,18 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     const to = LANE_WORLD_X[player.targetLane];
     const laneT = clamp(player.laneT + step / LANE_CHANGE_FRAMES, 0, 1);
     const px = lerp(from, to, smoothstep(laneT));
+
+    if (state.status === 'playing' && previousStatus !== 'playing') {
+      sinceLanding = Infinity;
+      wasAirborne = false;
+      deathElapsed = null;
+    }
+
+    if (state.status === 'gameover' && runnerReady) {
+      deathElapsed = deathElapsed === null ? 0 : deathElapsed + delta;
+    } else if (state.status !== 'gameover') {
+      deathElapsed = null;
+    }
 
     if (state.status === 'playing') sinceImpact = null;
     for (const event of events) {
@@ -773,6 +807,11 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
     }
 
     renderer.render(scene, camera);
+    previousStatus = state.status;
+    return {
+      deathFinished: state.status === 'gameover'
+        && deathAnimationComplete(runnerReady, runnerLoadFailed, deathElapsed ?? 0),
+    };
   }
 
   function dispose(): void {
