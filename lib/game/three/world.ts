@@ -19,7 +19,7 @@ import { recycledRowZ, trackTravelOffset } from './motion';
 
 // ── Depth ────────────────────────────────────────────────────────────────────
 /** Horizon colour. Fog resolves to this, so distance fades into the skyline. */
-export const SKY = 0xbcd8f2;
+export const SKY = 0xf1cfad;
 // Fog has to finish before FAR_Z, because that is where obstacles are culled and
 // a train must not appear out of clear air. Just as important is that the range
 // be *long*: squeezed into a few hundred units it compresses into a handful of
@@ -82,8 +82,9 @@ function makeSky(): THREE.Mesh {
   const ctx = canvas.getContext('2d')!;
 
   const grad = ctx.createLinearGradient(0, 0, 0, 512);
-  grad.addColorStop(0.0, '#2f7fd4');
-  grad.addColorStop(0.34, '#79b4e8');
+  grad.addColorStop(0.0, '#397f9d');
+  grad.addColorStop(0.44, '#79b6ca');
+  grad.addColorStop(0.48, '#c6d9ce');
   // Flat from here down, and that is the whole trick. Fog resolves distant
   // geometry to SKY, so anywhere a fogged roofline can appear the sky behind it
   // has to be SKY too — otherwise the roof reads as a hole punched in the sky.
@@ -94,9 +95,9 @@ function makeSky(): THREE.Mesh {
 
   // Soft cumulus, drawn as clusters of blurred discs and kept in the upper
   // third so they never collide with the fogged horizon band.
-  ctx.globalAlpha = 0.85;
+  ctx.globalAlpha = 0.38;
   ctx.filter = 'blur(9px)';
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = '#fff3df';
   for (let i = 0; i < 26; i++) {
     const cx = Math.random() * 1024;
     const cy = 40 + Math.random() * 150;
@@ -224,9 +225,9 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   // ── Lighting ───────────────────────────────────────────────────────────────
   // Bright hemisphere fill keeps the cartoon saturation; the sun does the
   // shaping and casts the shadows. Anything flatter reads as unlit cardboard.
-  scene.add(new THREE.HemisphereLight(0xd9edff, 0x7b796b, 1.2));
+  scene.add(new THREE.HemisphereLight(0xc5e8ef, 0x647459, 1.8));
 
-  const sun = new THREE.DirectionalLight(0xfff4df, 2.05);
+  const sun = new THREE.DirectionalLight(0xffd5a0, 2.6);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.near = 50;
@@ -241,7 +242,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   sun.shadow.normalBias = 2;
   scene.add(sun, sun.target);
 
-  const disposables: { dispose(): void }[] = [];
+  const disposables: { dispose(): void }[] = [(sky.material as THREE.MeshBasicMaterial).map!];
   const track = new THREE.Group();     // scrolls with the camera, modulo one sleeper
   scene.add(track);
 
@@ -261,13 +262,13 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   ballast.receiveShadow = true;
   scene.add(ballast);
 
-  const vergeTex = makeGroundTexture('#708166', '#a5b092', 700);
+  const vergeTex = makeGroundTexture('#608069', '#b2c586', 700);
   vergeTex.anisotropy = maxAnisotropy;
   vergeTex.repeat.set(3200 / TEXTURE_TILE, GROUND_LEN / TEXTURE_TILE);
   disposables.push(vergeTex);
   const verge = new THREE.Mesh(
     new THREE.PlaneGeometry(3200, GROUND_LEN),
-    new THREE.MeshStandardMaterial({ map: vergeTex, color: 0x9eaa91, roughness: 1 })
+    new THREE.MeshStandardMaterial({ map: vergeTex, color: 0xb8cba2, roughness: 1 })
   );
   verge.rotation.x = -Math.PI / 2;
   verge.position.y = BALLAST_Y - 26;
@@ -294,7 +295,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   const sleeperCount = Math.ceil(GROUND_LEN / SLEEPER_SPACING);
   const sleepers = new THREE.InstancedMesh(
     new THREE.BoxGeometry(SLEEPER_W, SLEEPER_H, SLEEPER_D),
-    new THREE.MeshStandardMaterial({ color: 0x665444, roughness: 0.96 }),
+    new THREE.MeshStandardMaterial({ color: 0x756252, roughness: 0.96 }),
     sleeperCount * LANE_WORLD_X.length
   );
   sleepers.castShadow = true;
@@ -329,7 +330,7 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
   }
 
   // ── Kerbs: a hard edge where the track stops ───────────────────────────────
-  const kerbMat = new THREE.MeshStandardMaterial({ color: 0xc8cbc4, roughness: 0.92 });
+  const kerbMat = new THREE.MeshStandardMaterial({ color: 0xe8d4b5, roughness: 0.92 });
   const kerbGeo = new THREE.BoxGeometry(20, KERB_H, GROUND_LEN);
   for (const side of [-1, 1]) {
     const kerb = new THREE.Mesh(kerbGeo, kerbMat);
@@ -337,6 +338,17 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
     kerb.castShadow = true;
     kerb.receiveShadow = true;
     scene.add(kerb);
+  }
+
+  // Warm safety strips frame the playable corridor without adding obstacles.
+  const edgeMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf6bb54, emissive: 0xd89730, emissiveIntensity: 0.22, roughness: 0.6,
+  });
+  const edgeGeometry = new THREE.BoxGeometry(5, 2, GROUND_LEN);
+  for (const side of [-1, 1]) {
+    const edge = new THREE.Mesh(edgeGeometry, edgeMaterial);
+    edge.position.set(side * (BALLAST_HALF_W + 15), BALLAST_Y - 25 + KERB_H, 0);
+    scene.add(edge);
   }
 
   // ── Recycled rows: lamps, then houses once their models land ───────────────
@@ -354,6 +366,31 @@ export function createWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): 
       // Offset one side by half a spacing so the two rows do not flash past in
       // lockstep, which is what makes a repeating row read as a repeating row.
       rows.push({ obj: lamp, slot: s + (side === 1 ? 0 : 0.5), spacing: LAMP_SPACING, slots: LAMP_SLOTS, near: 120 });
+    }
+  }
+
+  // Low-poly street trees break up the repeating roofs. Geometry and materials
+  // are shared; no extra lights, textures, or post-processing passes are needed.
+  const trunkGeometry = new THREE.CylinderGeometry(7, 11, 100, 6);
+  const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x765747, roughness: 1 });
+  const crownGeometry = new THREE.IcosahedronGeometry(65, 1);
+  const crownMaterials = [0x558776, 0x76975c, 0x3d776b].map(color =>
+    new THREE.MeshStandardMaterial({ color, roughness: 0.95 }),
+  );
+  for (const side of [-1, 1]) {
+    for (let slot = 0; slot < HOUSE_SLOTS; slot++) {
+      const tree = new THREE.Group();
+      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+      trunk.position.y = 50;
+      const crown = new THREE.Mesh(crownGeometry, crownMaterials[slot % 3]);
+      crown.position.y = 140;
+      crown.scale.set(1, 1.35, 1);
+      trunk.castShadow = crown.castShadow = true;
+      tree.add(trunk, crown);
+      tree.position.set(side * (BALLAST_HALF_W + 230), BALLAST_Y - 26, 0);
+      tree.scale.setScalar(0.9 + (slot % 3) * 0.12);
+      scene.add(tree);
+      rows.push({ obj: tree, slot: slot + (side === 1 ? 0.25 : 0.75), spacing: HOUSE_SPACING, slots: HOUSE_SLOTS, near: HOUSE_NEAR });
     }
   }
 

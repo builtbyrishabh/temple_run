@@ -33,11 +33,11 @@ export const MAX_SPEED        = 30;
  * Added to `speed` every frame, per difficulty — how long a run takes to reach
  * MAX_SPEED, and with it the tightest obstacle spacing (see MIN_GAP_SECONDS).
  * Since spacing is held in seconds, the ramp is the difficulty *clock*: easy
- * takes ~3½ minutes to arrive at its endgame, hard a little over one.
+ * takes ~2 minutes to arrive at its endgame, hard a little over one.
  */
 export const SPEED_INCREASE: Record<Difficulty, number> = {
-  easy:   0.0017,
-  medium: 0.0028,
+  easy:   0.0030,
+  medium: 0.0040,
   hard:   0.0050,
 };
 
@@ -110,29 +110,24 @@ export function collisionHalfDepth(type: ObstacleType): number {
 //  harder: with the gap held in seconds, raw speed no longer costs the runner
 //  any reaction time, so without this the corridor would be exactly as hard at
 //  two minutes as at five seconds and a good run would never end.
-export const OPENING_GAP_SECONDS = 2.2;
+export const OPENING_GAP_SECONDS = 1.9;
 
-//  Both numbers are floored by what one answer costs end to end: the previous
-//  wave finishing its crossing of the collision window, plus the decision
-//  cadence, plus a round trip, plus the lead a jump needs to straddle the
-//  window. That sum is speed-dependent — the first and last terms shrink as the
-//  corridor speeds up — so it is ~1.4s at INITIAL_SPEED and ~1.16s at
-//  MAX_SPEED. OPENING_GAP_SECONDS clears the first; MIN_GAP_SECONDS, which is
-//  only reached once the ramp tops out, sits just above the second. Go below
-//  either and waves arrive while the runner is still airborne over the last
-//  one, with no answer left to give.
+// The opening allows time for a model round trip plus an action. The endgame
+// deliberately squeezes that decision budget: these gaps still exceed the
+// longest movement (a 0.57s jump), but slow answers will no longer keep up.
+// Difficulty selects how soon the speed ramp reaches this pressure.
 export const MIN_GAP_SECONDS: Record<Difficulty, number> = {
-  easy:   1.5,
-  medium: 1.35,
-  hard:   1.15,
+  easy:   0.85,
+  medium: 0.78,
+  hard:   0.72,
 };
 
 /** Extra spacing on top of MIN_GAP_SECONDS, so waves do not arrive on a metronome. */
-export const GAP_JITTER_SECONDS = 0.4;
+export const GAP_JITTER_SECONDS = 0.25;
 
 // ── Coins ─────────────────────────────────────────────────────────────────
 export const COIN_VALUE         = 50;
-export const COIN_CLUSTER_SIZE  = 6;
+export const COIN_CLUSTER_SIZE  = 4;
 export const COIN_SPACING_Z     = 90;   // Z gap between coins in a cluster
 
 // ── Scoring ────────────────────────────────────────────────────────────────

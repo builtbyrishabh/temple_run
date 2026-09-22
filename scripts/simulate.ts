@@ -11,6 +11,7 @@
 // The point is to isolate the loop from the model. If the runner dies here it
 // is the loop's fault, not Jev's, and no amount of prompting will fix it.
 // Pass `serial` as the third argument to measure the un-pipelined loop instead.
+// LATENCY_SCALE=1.5 exercises slower responses (555–975 ms).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { initGameState, updateGame } from '../lib/game/engine';
@@ -51,7 +52,7 @@ function seedRandom(seed: number): void {
  * what the corridor speed has to be fair to.
  */
 function sampleLatency(): number {
-  return 370 + Math.round(280 * Math.random() ** 1.8);
+  return (370 + Math.round(280 * Math.random() ** 1.8)) * Number(process.env.LATENCY_SCALE ?? 1);
 }
 
 /**
@@ -226,9 +227,11 @@ for (const [i, r] of results.entries()) {
 }
 
 const median = distances[Math.floor(distances.length / 2)];
+const times = results.map(r => r.seconds).sort((a, b) => a - b);
 const mean = Math.round(distances.reduce((a, b) => a + b, 0) / distances.length);
 const survived = results.filter(r => r.survived).length;
 console.log(
   `\n  median ${median}m · mean ${mean}m · best ${distances.at(-1)}m · worst ${distances[0]}m · ` +
-  `survived ${survived}/${runs} · median latency ${results[0].medianLatency}ms`,
+  `survived ${survived}/${runs} · median duration ${times[Math.floor(times.length / 2)]}s · ` +
+  `median latency ${results[0].medianLatency}ms`,
 );

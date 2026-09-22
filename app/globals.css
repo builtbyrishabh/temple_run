@@ -29,3 +29,68 @@ canvas { display: block; width: 100%; height: 100%; }
 /* ── Scrollbar hide (for any scrollable UI) ──────────────────────────────── */
 ::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; }
+
+/* Watch mode has a quiet, editorial frame around the colourful game. */
+.watch-scene { font-family: Arial, Helvetica, sans-serif; }
+.spectator-panel {
+  height: 100%; overflow-y: auto; display: flex; flex-direction: column;
+  gap: 26px; padding: 28px; border-left: 1px solid #ffffff12;
+  color: #edf0ec; background: radial-gradient(ellipse at top right, #26363155, transparent 55%), #111b20;
+  font-size: 13px; line-height: 1.5;
+}
+.spectator-header { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
+.spectator-brand { display: flex; align-items: center; gap: 12px; }
+.jev-monogram { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 13px; background: #d4ebc0; color: #1a3028; font: bold 32px Georgia, serif; }
+.spectator-brand h2 { margin: 0; font-size: 23px; font-weight: 600; letter-spacing: -1px; }
+.spectator-brand p { margin: 2px 0 0; font-size: 9px; letter-spacing: 2.2px; color: #a4b2b4; }
+.session-tag { display: inline-flex; align-items: center; gap: 7px; color: #b9dfb0; font-size: 10px; }
+.session-tag i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.session-tag.is-mock { color: #ffc987; }
+.panel-eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #91a3a8; font-size: 9px; font-weight: 600; letter-spacing: 1.8px; }
+.decision-hero { padding: 20px; background: #ffffff05; border: 1px solid #ffffff12; border-radius: 18px; box-shadow: 0 10px 30px #0000000a; }
+.decision-title { display: flex; align-items: center; gap: 14px; margin: 18px 0 12px; color: var(--decision-color); }
+.decision-symbol { font-size: 43px; line-height: 1; font-weight: 300; }
+.decision-title h3 { margin: 0; font-size: 31px; font-weight: 500; letter-spacing: -1.3px; }
+.decision-reason { margin: 0; min-height: 54px; color: #bdc8c9; font-size: 12px; line-height: 1.6; }
+.decision-reason::first-letter { text-transform: uppercase; }
+.response-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.response-strip p { margin: 5px 0 0; font-size: 36px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -1.5px; line-height: 1.15; }
+.response-strip p span { color: #91a3a8; font-size: 15px; letter-spacing: 0; }
+.response-wave { width: 100px; height: 34px; stroke: #b9dfb0; stroke-width: 1.5; fill: none; opacity: 0.65; }
+.pressure-bars { display: flex; gap: 4px; margin: 12px 0; }
+.pressure-bars > span { height: 17px; flex: 1; background: #ffffff0c; border-radius: 2px; }
+.pressure-bars > .is-filled { background: #e8bc7a; }
+.pressure-caption { display: flex; justify-content: space-between; font-size: 11px; color: #a5b4b8; }
+.pressure-caption strong { font-weight: 500; color: #e8d5b8; }
+.option-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 12px; }
+.move-option { display: flex; flex-direction: column; align-items: center; gap: 5px; color: #819497; padding: 9px 0; border-radius: 9px; border: 1px solid transparent; }
+.move-option.is-chosen { color: #d4ebc0; background: #d4ebc008; border-color: #d4ebc025; }
+.option-symbol { font-size: 20px; line-height: 1; }
+.option-name { font-size: 10px; }
+.option-bar { display: flex; align-items: flex-end; width: 4px; height: 30px; border-radius: 3px; overflow: hidden; background: #ffffff0c; }
+.option-bar > span { width: 100%; background: currentColor; transition: height 160ms; }
+.option-value { font-size: 10px; font-variant-numeric: tabular-nums; }
+.decision-details { border-top: 1px solid #ffffff12; padding-top: 16px; }
+.decision-details summary { display: flex; justify-content: space-between; cursor: pointer; color: #bdc8c9; list-style: none; }
+.decision-details summary::-webkit-details-marker { display: none; }
+.decision-details[open] summary span { transform: rotate(45deg); }
+.decision-details p, .decision-details dd { color: #a5b4b8; font-size: 12px; margin: 5px 0 12px; }
+.decision-details dt { color: #d4ebc0; font-size: 10px; margin-top: 12px; }
+.spectator-footer { display: flex; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 5px; font-size: 8px; letter-spacing: 1.4px; color: #76898c; }
+.panel-error { color: #ffc3a9; border: 1px solid #ffc3a933; padding: 12px; border-radius: 10px; }
+@media (max-width: 1023px) {
+  .spectator-panel { gap: 15px; padding: 18px 20px; }
+  .spectator-header { flex-direction: row; align-items: center; justify-content: space-between; }
+  .spectator-brand h2 { font-size: 19px; }
+  .spectator-brand p, .decision-options, .spectator-footer { display: none; }
+  .jev-monogram { width: 30px; height: 30px; font-size: 24px; border-radius: 9px; }
+  .decision-hero { padding: 14px 16px; }
+  .decision-title { margin: 8px 0; }
+  .decision-title h3 { font-size: 26px; }
+  .decision-symbol { font-size: 30px; }
+  .decision-reason { min-height: 0; }
+  .response-strip p { font-size: 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .option-bar > span { transition: none; }
+}

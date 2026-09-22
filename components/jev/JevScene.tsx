@@ -32,10 +32,7 @@ interface RunResult { score: number; distance: number; coins: number; }
 const INITIAL_LIVE: LiveState = { score: 0, distance: 0, coins: 0, speed: 8 };
 
 export default function JevScene() {
-  // Easy by default, and not for the reason it looks like. Medium spaces its
-  // obstacle waves 400-600 world units apart, which at the opening speed is
-  // 0.67-1.0s — barely two decisions at Jev's measured ~430ms round trip. Easy
-  // leaves enough room between waves for the loop to actually keep up.
+  // Easy now builds from single obstacles into mixed waves during the run.
   const [difficulty, setDifficulty] = useState<Difficulty>('easy');
   const [runKey, setRunKey] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -73,7 +70,7 @@ export default function JevScene() {
   }, [startRun]);
 
   return (
-    <main className="fixed inset-0 flex flex-col bg-[#060014] lg:flex-row">
+    <main className="watch-scene fixed inset-0 flex flex-col bg-[#111b20] lg:flex-row">
 
       {/* ── Stage ── */}
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -117,7 +114,7 @@ export default function JevScene() {
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 className="absolute inset-0 flex items-center justify-center bg-black/70"
               >
-                <p className="glow-cyan text-2xl font-bold tracking-[0.3em] text-cyan-300">PAUSED</p>
+                <p className="rounded-full border border-white/20 bg-[#111b20]/80 px-6 py-3 text-sm font-medium tracking-[0.3em] text-[#d4ebc0]">PAUSED</p>
               </motion.div>
             )}
           </AnimatePresence>
@@ -125,8 +122,8 @@ export default function JevScene() {
       </div>
 
       {/* ── Panel ── */}
-      <div className="h-[45vh] shrink-0 lg:h-auto lg:w-[380px]">
-        <JevPanel status={status} />
+      <div className="h-[38vh] shrink-0 lg:h-auto lg:w-[350px] xl:w-[380px]">
+        <JevPanel status={status} speed={live.speed} paused={paused} finished={result !== null} />
       </div>
     </main>
   );
@@ -146,15 +143,16 @@ function ControlStrip({
   best: number;
 }) {
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-black/40 px-3 py-2 text-[11px]">
-      <span className="mr-1 text-white/35">difficulty</span>
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-[#111b20] px-4 py-3 text-[11px]">
+      <span className="mr-3 font-bold tracking-[0.18em] text-white/90">JEV / <span className="hidden sm:inline">RAILWAY </span>RUN</span>
+      <span className="mr-1 hidden text-white/40 sm:inline">pace</span>
       {DIFFICULTIES.map(d => (
         <button
           key={d}
           onClick={() => onDifficulty(d)}
-          className={`rounded border px-2 py-0.5 uppercase tracking-wider transition-colors ${
+          className={`rounded-full border px-3 py-1 uppercase tracking-wider transition-colors ${
             d === difficulty
-              ? 'border-cyan-400 bg-cyan-400/15 text-cyan-300'
+              ? 'border-[#d4ebc0]/40 bg-[#d4ebc0]/10 text-[#d4ebc0]'
               : 'border-white/15 text-white/40 hover:text-white/70'
           }`}
         >
@@ -165,7 +163,7 @@ function ControlStrip({
       <div className="ml-auto flex items-center gap-2">
         <span className="text-white/35">jev&apos;s best</span>
         <span className="font-bold text-white/80 tabular-nums">{best.toLocaleString()}</span>
-        <button onClick={onToggleSound} className="rounded border border-white/15 px-2 py-0.5 text-white/50 hover:text-white/80">
+        <button aria-label={soundOn ? "Mute sound" : "Enable sound"} onClick={onToggleSound} className="rounded border border-white/15 px-2 py-0.5 text-white/50 hover:text-white/80">
           {soundOn ? '🔊' : '🔇'}
         </button>
         <button onClick={onTogglePause} className="rounded border border-white/15 px-2 py-0.5 text-white/50 hover:text-white/80">
@@ -184,9 +182,9 @@ function ResultCard({ result, best }: { result: RunResult; best: number }) {
     >
       <motion.div
         initial={{ scale: 0.92, y: 12 }} animate={{ scale: 1, y: 0 }}
-        className="rounded-lg border border-white/15 bg-[#0b0024]/95 px-8 py-6 text-center"
+        className="rounded-lg border border-white/15 bg-[#111b20]/95 px-8 py-6 text-center"
       >
-        <p className="glow-red text-lg font-bold tracking-[0.25em] text-red-400">JEV CRASHED</p>
+        <p className="text-lg font-bold tracking-[0.15em] text-[#ffb69d]">JEV CRASHED</p>
         <div className="mt-4 grid grid-cols-3 gap-6 text-sm">
           <Figure label="score" value={result.score.toLocaleString()} />
           <Figure label="metres" value={String(result.distance)} />

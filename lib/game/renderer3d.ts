@@ -310,7 +310,7 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.18;
+  renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -348,6 +348,9 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   // anchored on that box's centre, so what you see is what collides.
   load('train').then(({ scene: model }) => {
     fitTo(model, { x: LANE_W * 0.92, y: WALL_HEIGHT, z: OBSTACLE_DEPTH.WALL });
+    // The asset's rear is open. Face its closed cab toward the approaching
+    // runner, then anchor the rotated footprint to the collision box.
+    model.rotation.y = Math.PI;
     pools.train = new Pool(() => anchored(model.clone(true)), scene);
   });
 
@@ -366,7 +369,7 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
   });
 
   load('coin').then(({ scene: model }) => {
-    fitTo(model, { x: 36, y: 36, z: 8 });
+    fitTo(model, { x: 28, y: 28, z: 7 });
     // Coins are the one thing that should read as gold from any angle, and the
     // gold lives in the texture — so the glow has to come through emissiveMap.
     model.traverse(child => {
@@ -564,7 +567,7 @@ export function createRenderer3D(canvas: HTMLCanvasElement): Renderer3D {
       lerp(CAM_LOOK_HEIGHT, PLAYER_WORLD_HEIGHT * 0.4, settle),
       -PLAYER_Z - lerp(CAM_LOOK_AHEAD, 60, settle),
     );
-    sun.position.set(px + 400, 900, -PLAYER_Z + 500);
+    sun.position.set(px - 650, 750, -PLAYER_Z + 350);
     sun.target.position.set(px, 0, -PLAYER_Z - 400);
     sun.target.updateMatrixWorld();
 
