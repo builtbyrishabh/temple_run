@@ -16,7 +16,7 @@ import {
   canStillStep, describeDelay, framesToImpact, framesToRunner,
 } from './timing';
 
-/** Obstacles land within ±40 of their cluster's Z, so this gathers one wave. */
+/** Gather the obstacles belonging to the same wave. */
 const CLUSTER_SPREAD = 120;
 
 const LANE_NAMES = ['left', 'middle', 'right'] as const;

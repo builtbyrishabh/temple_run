@@ -27,7 +27,7 @@ type Pattern = Array<[ObstacleType, Lane | -1]>;
 // difficulty curve is therefore built out of what a wave asks for, never out of
 // whether an answer exists at all:
 //
-//   easy    one lane blocked, and standing still is often the answer
+//   easy    starts with one lane blocked, then introduces medium patterns
 //   medium  two lanes blocked; the one way through has to be found
 //   hard    waves that fill the corridor, and the heaviest share of walls —
 //           the only obstacle answerable solely by a sideways step, which is
@@ -36,9 +36,12 @@ type Pattern = Array<[ObstacleType, Lane | -1]>;
 const EASY_PATTERNS: Pattern[] = [
   [['LOW_WALL', 0]],
   [['LOW_WALL', 1]],
+  [['LOW_WALL', 2]],
+  [['HIGH_BAR', 0]],
   [['HIGH_BAR', 1]],
   [['HIGH_BAR', 2]],
   [['WALL', 0]],
+  [['WALL', 1]],
   [['WALL', 2]],
 ];
 
@@ -64,6 +67,19 @@ const HARD_PATTERNS: Pattern[] = [
   [['HIGH_BAR', 0], ['WALL', 2]],
   [['WALL', 0], ['LOW_WALL', 2]],
 ];
+
+// Late waves mostly fill all three lanes, so holding one safe lane cannot
+// sustain a run. The two train patterns keep lane changes in the mix.
+const ENDGAME_PATTERNS = ([
+  [['LOW_WALL', -1]],
+  [['HIGH_BAR', -1]],
+  [['LOW_WALL', 0], ['HIGH_BAR', 1], ['LOW_WALL', 2]],
+  [['HIGH_BAR', 0], ['LOW_WALL', 1], ['HIGH_BAR', 2]],
+  [['LOW_WALL', 0], ['LOW_WALL', 1], ['HIGH_BAR', 2]],
+  [['HIGH_BAR', 0], ['HIGH_BAR', 1], ['LOW_WALL', 2]],
+  [['WALL', 0], ['WALL', 2]],
+  [['WALL', 1]],
+] satisfies Pattern[]).filter(isAnswerableFromAnyLane);
 
 /**
  * The tables above, filtered to the waves a runner can actually answer. Doing
@@ -145,7 +161,7 @@ export function initGameState(difficulty: Difficulty, highScore: number): GameSt
     highScore,
     // Opening beats, near enough to arrive promptly rather than after a full
     // SPAWN_Z of empty corridor.
-    nextObstacleZ: 1800,
+    nextObstacleZ: 1600,
     nextCoinZ: 900,
     frameCount: 0,
     idCounter: 0,
@@ -253,7 +269,7 @@ function spawnWorld(state: GameState): void {
   if (frontZ >= state.nextCoinZ) {
     const atZ = state.nextCoinZ;
     spawnCoinCluster(state, atZ);
-    state.nextCoinZ = atZ + secondsToZ(state, 0.5 + Math.random() * 0.8);
+    state.nextCoinZ = atZ + secondsToZ(state, 1.0 + Math.random() * 0.6);
   }
 }
 
@@ -261,10 +277,12 @@ function spawnWorld(state: GameState): void {
  * Seconds of corridor between this wave and the next. Tightens from
  * OPENING_GAP_SECONDS to the difficulty's MIN_GAP_SECONDS in step with the
  * speed ramp, so the run gets harder in the one dimension the runner actually
- * feels — how long it has to answer — and never in a way it cannot answer.
+ * feels — how long it has to answer. Late gaps allow the movement itself,
+ * but increasingly punish decision latency.
  */
 function gapSeconds(state: GameState): number {
-  const ramp = (state.speed - INITIAL_SPEED) / (MAX_SPEED - INITIAL_SPEED);
+  // Leave the opening reaction budget intact before tightening the course.
+  const ramp = Math.max(0, (state.speed - 12) / (MAX_SPEED - 12));
   return lerp(OPENING_GAP_SECONDS, MIN_GAP_SECONDS[state.difficulty], ramp)
     + Math.random() * GAP_JITTER_SECONDS;
 }
@@ -289,13 +307,25 @@ function secondsToZ(state: GameState, seconds: number): number {
 }
 
 function spawnObstacleCluster(state: GameState, atZ: number): void {
-  const chosen = pick(PATTERNS[state.difficulty]);
+  // Introduce complexity gradually, independently of the speed/spacing ramp.
+  // The first stretch uses single obstacles on every difficulty; easy later
+  // mixes in medium patterns. Above speed 16, every mode progressively adds
+  // endgame waves until they become the entire course at maximum speed.
+  const seconds = state.frameCount / 60;
+  const variety = Math.min(1, Math.max(0, (seconds - 8) / 35));
+  const advanced = state.difficulty === 'easy' ? 'medium' : state.difficulty;
+  const latePressure = Math.max(0, (state.speed - 16) / (MAX_SPEED - 16));
+  const regular = PATTERNS[Math.random() < variety ? advanced : 'easy'];
+  const chosen = pick(latePressure > 0 && Math.random() < latePressure ? ENDGAME_PATTERNS : regular);
+  // Mirroring preserves adjacency and answerability, while avoiding a bias
+  // toward the middle/right arrangements in the authored pattern table.
+  const mirror = Math.random() < 0.5;
   for (const [type, lane] of chosen) {
     state.obstacles.push({
       id: ++state.idCounter,
       type,
-      lane,
-      worldZ: atZ + randInt(-40, 40),
+      lane: lane === -1 ? -1 : mirror ? (2 - lane) as Lane : lane,
+      worldZ: atZ,
       passed: false,
     });
   }
